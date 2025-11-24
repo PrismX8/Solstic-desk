@@ -14,8 +14,6 @@ export const RemoteSurface = ({ session }: Props) => {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const resizableRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const imageRef = useRef<HTMLImageElement | null>(null);
   const lastMouseMoveTime = useRef<number>(0);
   const [fitMode, setFitMode] = useState<'contain' | 'actual'>('contain');
   const [isControlling, setIsControlling] = useState(false);
@@ -23,50 +21,16 @@ export const RemoteSurface = ({ session }: Props) => {
   const [isResizing, setIsResizing] = useState(false);
   const [resizeCorner, setResizeCorner] = useState<'nw' | 'ne' | 'sw' | 'se' | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  // Make default size huge - use viewport dimensions or large defaults
+  const [containerSize, setContainerSize] = useState({ 
+    width: typeof window !== 'undefined' ? Math.max(1920, window.innerWidth * 0.9) : 1920, 
+    height: typeof window !== 'undefined' ? Math.max(1080, window.innerHeight * 0.8) : 1080 
+  });
   const [containerPosition, setContainerPosition] = useState({ x: 0, y: 0 });
-
-  // Optimize frame rendering - use requestAnimationFrame for smooth updates
-  useEffect(() => {
-    if (!session.frame || !canvasRef.current) return;
-    
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d', { 
-      alpha: false,
-      desynchronized: true, // Better performance
-      willReadFrequently: false 
-    });
-    if (!ctx) return;
-    
-    let rafId: number;
-    
-    // Use image caching to avoid reloading
-    if (!imageRef.current || imageRef.current.src !== session.frame.src) {
-      const img = new Image();
-      img.onload = () => {
-        rafId = requestAnimationFrame(() => {
-          if (canvas && ctx) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0);
-          }
-        });
-      };
-      img.src = session.frame.src;
-      imageRef.current = img;
-    } else {
-      // Image already loaded, just redraw with RAF
-      rafId = requestAnimationFrame(() => {
-        if (canvas && ctx && imageRef.current?.complete) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(imageRef.current, 0, 0);
-        }
-      });
-    }
-    
-    return () => {
-      if (rafId) cancelAnimationFrame(rafId);
-    };
-  }, [session.frame]);
+  
+  // Get canvasRef from session (provided by useRemoteSession hook)
+  // The hook handles all frame rendering via worker, we just need to attach the canvas
+  const canvasRef = 'canvasRef' in session ? (session as any).canvasRef : null;
 
   useEffect(() => {
     if (session.status !== 'connected') {
@@ -80,41 +44,17 @@ export const RemoteSurface = ({ session }: Props) => {
     }
   }, [isControlling]);
 
-  // Initialize container size
+  // Initialize container size - use huge defaults
   useEffect(() => {
-    const initSize = () => {
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          // Only initialize if not already set
-          if (containerSize.width === 0 && containerSize.height === 0) {
-            setContainerSize({ width: rect.width, height: rect.height });
-          }
-        } else {
-          // Fallback: use parent or default size
-          const parent = containerRef.current.parentElement;
-          if (parent) {
-            const parentRect = parent.getBoundingClientRect();
-            if (containerSize.width === 0 && containerSize.height === 0) {
-              setContainerSize({ 
-                width: parentRect.width || 800, 
-                height: parentRect.height || 600 
-              });
-            }
-          } else if (containerSize.width === 0 && containerSize.height === 0) {
-            setContainerSize({ width: 800, height: 600 });
-          }
-        }
-      }
-    };
-    
-    // Try immediately
-    initSize();
-    
-    // Also try after a short delay to ensure layout is complete
-    const timeout = setTimeout(initSize, 100);
-    return () => clearTimeout(timeout);
-  }, [containerSize.width, containerSize.height]);
+    if (containerSize.width === 0 || containerSize.height === 0) {
+      const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
+      const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 1080;
+      setContainerSize({ 
+        width: Math.max(1920, viewportWidth * 0.9), 
+        height: Math.max(1080, viewportHeight * 0.8) 
+      });
+    }
+  }, []);
 
   // Handle window resize
   useEffect(() => {
@@ -233,25 +173,28 @@ export const RemoteSurface = ({ session }: Props) => {
 
   const calculateNormalizedCoords = (clientX: number, clientY: number) => {
     const rect = surfaceRef.current?.getBoundingClientRect();
-    if (!rect || !session.frame) return null;
+    const canvas = canvasRef?.current;
+    if (!rect || !canvas || canvas.width === 0 || canvas.height === 0) return null;
     
-    const imgAspect = session.frame.width / session.frame.height;
+    const canvasWidth = canvas.width;
+    const canvasHeight = canvas.height;
+    const imgAspect = canvasWidth / canvasHeight;
     const containerAspect = rect.width / rect.height;
     let x, y;
     
     if (fitMode === 'contain') {
       // For contain mode
       if (imgAspect > containerAspect) {
-        const scale = rect.width / session.frame.width;
-        const scaledHeight = session.frame.height * scale;
+        const scale = rect.width / canvasWidth;
+        const scaledHeight = canvasHeight * scale;
         const offsetY = (rect.height - scaledHeight) / 2;
         const localX = clientX - rect.left;
         const localY = clientY - rect.top - offsetY;
         x = clamp(localX / rect.width);
         y = clamp(localY / scaledHeight);
       } else {
-        const scale = rect.height / session.frame.height;
-        const scaledWidth = session.frame.width * scale;
+        const scale = rect.height / canvasHeight;
+        const scaledWidth = canvasWidth * scale;
         const offsetX = (rect.width - scaledWidth) / 2;
         const localX = clientX - rect.left - offsetX;
         const localY = clientY - rect.top;
@@ -260,8 +203,8 @@ export const RemoteSurface = ({ session }: Props) => {
       }
     } else {
       // Actual size mode
-      x = clamp((clientX - rect.left) / session.frame.width);
-      y = clamp((clientY - rect.top) / session.frame.height);
+      x = clamp((clientX - rect.left) / canvasWidth);
+      y = clamp((clientY - rect.top) / canvasHeight);
     }
     
     return { x, y };
@@ -367,11 +310,17 @@ export const RemoteSurface = ({ session }: Props) => {
   };
 
   const handleScreenshot = () => {
-    if (!session.frame) return;
-    const anchor = document.createElement('a');
-    anchor.href = session.frame.src;
-    anchor.download = `solstice-${new Date().toISOString()}.jpg`;
-    anchor.click();
+    const canvas = canvasRef?.current;
+    if (!canvas || canvas.width === 0 || canvas.height === 0) return;
+    canvas.toBlob((blob: Blob | null) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `solstice-${new Date().toISOString()}.jpg`;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+    }, 'image/jpeg', 0.95);
   };
 
   return (
@@ -414,13 +363,13 @@ export const RemoteSurface = ({ session }: Props) => {
               setFitMode((mode) => (mode === 'contain' ? 'actual' : 'contain'))
             }
             active={fitMode === 'actual'}
-            disabled={!session.frame}
+            disabled={!canvasRef?.current || session.status !== 'connected'}
           />
           <ToolbarButton
             icon={<Square />}
             label="Capture"
             onClick={handleScreenshot}
-            disabled={!session.frame}
+            disabled={!canvasRef?.current || session.status !== 'connected'}
           />
         </div>
       </div>
@@ -485,11 +434,9 @@ export const RemoteSurface = ({ session }: Props) => {
           if (isControlling) e.preventDefault();
         }}
       >
-        {session.frame ? (
+        {canvasRef && canvasRef.current && canvasRef.current.width > 0 ? (
           <canvas
             ref={canvasRef}
-            width={session.frame.width}
-            height={session.frame.height}
             className={clsx(
               'select-none border border-white/5 shadow-2xl rounded-2xl',
               fitMode === 'contain'
@@ -499,8 +446,8 @@ export const RemoteSurface = ({ session }: Props) => {
             style={
               fitMode === 'actual'
                 ? {
-                    width: `${session.frame.width}px`,
-                    height: `${session.frame.height}px`,
+                    width: `${canvasRef.current.width}px`,
+                    height: `${canvasRef.current.height}px`,
                   }
                 : {
                     width: '100%',
@@ -531,38 +478,44 @@ export const RemoteSurface = ({ session }: Props) => {
         )}
 
         {/* Render all viewer cursors */}
-        {session.frame?.cursors && session.frame.cursors.length > 0 && (
-          <div className="pointer-events-none absolute inset-0">
-            {session.frame.cursors.map((remoteCursor, idx) => {
-              const rect = surfaceRef.current?.getBoundingClientRect();
-              if (!rect || !session.frame) return null;
-              
-              // Calculate scale and offset for the displayed image
-              const imgAspect = session.frame.width / session.frame.height;
-              const containerAspect = rect.width / rect.height;
-              let scaleX = 1;
-              let scaleY = 1;
-              let offsetX = 0;
-              let offsetY = 0;
+        {(() => {
+          const metadata = (session as any).frameMetadata;
+          const cursors = metadata?.cursors || [];
+          const canvas = canvasRef?.current;
+          if (!cursors.length || !canvas || !metadata) return null;
+          
+          return (
+            <div className="pointer-events-none absolute inset-0">
+              {cursors.map((remoteCursor: any, idx: number) => {
+                const rect = surfaceRef.current?.getBoundingClientRect();
+                if (!rect || !metadata.width || !metadata.height) return null;
+                
+                // Calculate scale and offset for the displayed image
+                const imgAspect = metadata.width / metadata.height;
+                const containerAspect = rect.width / rect.height;
+                let scaleX = 1;
+                let scaleY = 1;
+                let offsetX = 0;
+                let offsetY = 0;
 
-              if (fitMode === 'contain') {
-                if (imgAspect > containerAspect) {
-                  // Image is wider - fit to width
-                  scaleX = scaleY = rect.width / session.frame.width;
-                  offsetY = (rect.height - session.frame.height * scaleY) / 2;
+                if (fitMode === 'contain') {
+                  if (imgAspect > containerAspect) {
+                    // Image is wider - fit to width
+                    scaleX = scaleY = rect.width / metadata.width;
+                    offsetY = (rect.height - metadata.height * scaleY) / 2;
+                  } else {
+                    // Image is taller - fit to height
+                    scaleX = scaleY = rect.height / metadata.height;
+                    offsetX = (rect.width - metadata.width * scaleX) / 2;
+                  }
                 } else {
-                  // Image is taller - fit to height
-                  scaleX = scaleY = rect.height / session.frame.height;
-                  offsetX = (rect.width - session.frame.width * scaleX) / 2;
+                  // Actual size
+                  scaleX = rect.width / metadata.width;
+                  scaleY = rect.height / metadata.height;
                 }
-              } else {
-                // Actual size
-                scaleX = rect.width / session.frame.width;
-                scaleY = rect.height / session.frame.height;
-              }
 
-              const x = remoteCursor.x * session.frame.width * scaleX + offsetX;
-              const y = remoteCursor.y * session.frame.height * scaleY + offsetY;
+                const x = remoteCursor.x * metadata.width * scaleX + offsetX;
+                const y = remoteCursor.y * metadata.height * scaleY + offsetY;
 
               // Generate a color based on viewerId
               const colors = [
@@ -575,19 +528,20 @@ export const RemoteSurface = ({ session }: Props) => {
               ];
               const color = colors[idx % colors.length];
 
-              return (
-                <div
-                  key={remoteCursor.viewerId}
-                  className={clsx(
-                    'absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-lg',
-                    color,
-                  )}
-                  style={{ left: x, top: y }}
-                />
-              );
-            })}
-          </div>
-        )}
+                return (
+                  <div
+                    key={remoteCursor.viewerId}
+                    className={clsx(
+                      'absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-lg',
+                      color,
+                    )}
+                    style={{ left: x, top: y }}
+                  />
+                );
+              })}
+            </div>
+          );
+        })()}
       </div>
         {/* Resize handles on all corners - only visible when not controlling */}
         {!isControlling && [

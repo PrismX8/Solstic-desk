@@ -8,11 +8,13 @@
   "main": "main.js",
   "scripts": {
     "dev": "cross-env ELECTRON_START_URL=http://localhost:5173 electron .",
+    "dev:desktop": "cross-env ELECTRON_START_URL=http://localhost:5173 electron .",
     "start": "electron .",
     "sync-ui": "node ./scripts/sync-ui.mjs",
     "clean": "node ./scripts/clean-release.mjs",
     "build": "npm run sync-ui",
     "dist": "npm run sync-ui && npm run clean && electron-builder --win",
+    "dist:desktop": "npm run sync-ui && npm run clean && electron-builder --win",
     "postinstall": "node -e \"require('node-gyp-build')('.')\"",
     "lint": "echo \"No lint configured\"",
     "format": "prettier --write \"*.{js,ts,mjs,json}\""

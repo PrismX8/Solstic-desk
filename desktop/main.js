@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, session } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { HostController } = require('./host/controller');
 
@@ -141,10 +141,12 @@ autoUpdater.on('update-downloaded', (info) => {
 });
 
 // Check for updates on app ready (only in production)
+// Note: Auto-updates only work with packaged releases, not in dev mode
 if (!isDev) {
   app.whenReady().then(() => {
     // Wait a bit before first check to let app fully initialize
     setTimeout(() => {
+      console.log('[updater] Checking for updates (production mode only)...');
       autoUpdater.checkForUpdates();
     }, 3000);
     
@@ -153,6 +155,9 @@ if (!isDev) {
       autoUpdater.checkForUpdates();
     }, 4 * 60 * 60 * 1000);
   });
+} else {
+  console.log('[updater] Auto-updates disabled in development mode');
+  console.log('[updater] To test auto-updates, build a release: npm run dist:desktop');
 }
 
 // IPC handler to manually check for updates
@@ -171,6 +176,21 @@ ipcMain.handle('install-update', () => {
 });
 
 app.whenReady().then(() => {
+  // Set Content Security Policy to fix security warning
+  // Must be done after app is ready
+  const csp = isDev
+    ? "default-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:* ws://localhost:* wss://* https://* data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:* blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' http://localhost:* https://*; style-src-elem 'self' 'unsafe-inline' http://localhost:* https://*;"
+    : "default-src 'self' 'unsafe-inline' ws://* wss://* https://* data: blob:; script-src 'self' 'unsafe-inline' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://*; style-src-elem 'self' 'unsafe-inline' https://*;";
+
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [csp],
+      },
+    });
+  });
+
   createWindow();
 
   app.on('activate', () => {

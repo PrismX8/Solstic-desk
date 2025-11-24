@@ -64,6 +64,7 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
   const latestFrameMetaRef = useRef<{ timestamp?: number; bytes?: number; cursors?: any[] } | null>(null);
   const wantRenderRef = useRef(false);
   const rafRef = useRef<number | null>(null);
+  const [frameMetadata, setFrameMetadata] = useState<{ width?: number; height?: number; cursors?: any[] } | null>(null);
 
   // fps / telemetry sampling
   const frameCounterRef = useRef(0);
@@ -135,21 +136,26 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
         const msg = ev.data;
         try {
           if (msg && msg.type === 'frame') {
-            const { data: b64, mime = 'image/jpeg', timestamp, cursors } = msg;
+            const { data: b64, mime = 'image/jpeg', timestamp, cursors, bytes } = msg;
             // decode base64 to binary
-            // Using atob in worker
             const binary = atob(b64);
             const len = binary.length;
             const buf = new Uint8Array(len);
             for (let i = 0; i < len; i++) buf[i] = binary.charCodeAt(i);
             // create Blob and then ImageBitmap
             const blob = new Blob([buf], { type: mime });
-            // createImageBitmap is available in workers in modern browsers
             const bitmap = await createImageBitmap(blob);
-            // Transfer ImageBitmap back to main thread
-            self.postMessage({ type: 'bitmap', timestamp, cursors }, [bitmap]);
-            // Note: transferred bitmap is not included in payload (it is sent as a transferable)
-            // but the browser will attach it to event.dataTransferables (we handle in main thread)
+            // Post bitmap as the first argument, metadata as properties
+            // When transferring, the bitmap is moved, so we include width/height in metadata
+            self.postMessage({
+              type: 'bitmap',
+              timestamp,
+              cursors,
+              bytes,
+              width: bitmap.width,
+              height: bitmap.height,
+              bitmap: bitmap
+            }, [bitmap]);
           } else if (msg && msg.type === 'close') {
             self.close();
           }
@@ -234,52 +240,59 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
       }
     };
 
-    // To correctly receive transferred ImageBitmap AND metadata, override worker.onmessage more robustly:
-    // We can't change what ev.data contains across browsers here, so also listen to 'message' event with event.data and event.ports.
-    // In practice, when the worker posts {type:'bitmap', timestamp, cursors}, [bitmap]
-    // the structured-clone will include the bitmap inside ev.data as one of its properties in modern browsers.
-    // So we'll also add a separate handler below:
-    (w as any).addEventListener('message', (ev: MessageEvent) => {
+    // Handle worker messages - ImageBitmap is transferred separately
+    w.onmessage = (ev: MessageEvent) => {
       const payload = ev.data;
-      // Try to find the ImageBitmap in payload or in event. Wait: transferred objects are placed in payload if property references them.
-      // For reliability, check each property to find an ImageBitmap
-      let foundBitmap: ImageBitmap | null = null;
-      if (payload) {
-        for (const k of Object.keys(payload)) {
-          const v = (payload as any)[k];
-          if (v && typeof v === 'object' && 'close' in v && typeof v.close === 'function') {
-            foundBitmap = v as ImageBitmap;
-            break;
+      if (payload?.type === 'bitmap') {
+        // When ImageBitmap is transferred, it should be accessible in the payload
+        // Try multiple ways to find it since browser implementations vary
+        let bitmap: ImageBitmap | null = null;
+        
+        // Method 1: Direct property (most common)
+        if (payload.bitmap && payload.bitmap instanceof ImageBitmap) {
+          bitmap = payload.bitmap;
+        }
+        // Method 2: Check all properties
+        else if (payload) {
+          for (const key of Object.keys(payload)) {
+            const value = (payload as any)[key];
+            if (value instanceof ImageBitmap) {
+              bitmap = value;
+              break;
+            }
           }
         }
-        // Sometimes payload itself is not object; fallback: if ev.data is ImageBitmap
-        if (!foundBitmap && typeof payload === 'object' && payload instanceof ImageBitmap) {
-          foundBitmap = payload as ImageBitmap;
+        // Method 3: Check if payload itself is ImageBitmap (unlikely but possible)
+        if (!bitmap && payload instanceof ImageBitmap) {
+          bitmap = payload;
         }
-      }
-      // If not found, also check ev.data?.bitmap
-      if (!foundBitmap && (payload as any)?.bitmap) foundBitmap = (payload as any).bitmap;
 
-      // If we cannot find a transferred bitmap, try to check ev.dataTransfer? (older browsers might not support)
-      if (!foundBitmap) {
-        // last-resort: check global lastTransfer (not ideal)
-        // We bail quietly rather than throw.
-      }
-
-      if (foundBitmap) {
-        // release previous bitmap
-        if (latestBitmapRef.current && latestBitmapRef.current !== foundBitmap) {
-          try { latestBitmapRef.current.close(); } catch (e) {}
+        if (bitmap) {
+          // Release previous bitmap
+          if (latestBitmapRef.current && latestBitmapRef.current !== bitmap) {
+            try { latestBitmapRef.current.close(); } catch (e) {}
+          }
+          latestBitmapRef.current = bitmap;
+          const meta = {
+            timestamp: payload.timestamp,
+            bytes: payload.bytes,
+            cursors: payload.cursors,
+          };
+          latestFrameMetaRef.current = meta;
+          // Update frame metadata state for component access
+          setFrameMetadata({
+            width: payload.width || bitmap.width,
+            height: payload.height || bitmap.height,
+            cursors: meta.cursors || [],
+          });
+          wantRenderRef.current = true;
+        } else {
+          console.warn('[frame-decoder] Received bitmap message but ImageBitmap not found in payload', payload);
         }
-        latestBitmapRef.current = foundBitmap;
-        latestFrameMetaRef.current = {
-          timestamp: payload?.timestamp,
-          bytes: payload?.bytes,
-          cursors: payload?.cursors,
-        };
-        wantRenderRef.current = true;
+      } else if (payload?.type === 'error') {
+        console.error('[frame-decoder-worker] error', payload.message);
       }
-    });
+    };
 
     // start render loop
     if (!rafRef.current) rafRef.current = requestAnimationFrame(renderLoop);
@@ -322,30 +335,42 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
         // We expect payload.data to be base64 string
         const { data, mime, bytes, timestamp, cursors } = message.payload;
 
-        // If no worker, create one
+        // Worker should already exist from useEffect, but ensure it's created if needed
         if (!workerRef.current) {
-          workerRef.current = createDecoderWorker();
-          // attach same message handler as in effect (robustness)
-          workerRef.current.onmessage = (ev) => {
-            // We expect payload.type === 'bitmap' and transferred ImageBitmap present
+          const newWorker = createDecoderWorker();
+          workerRef.current = newWorker;
+          // Set up message handler (same logic as in useEffect)
+          newWorker.onmessage = (ev: MessageEvent) => {
             const payload = ev.data;
-            // Find ImageBitmap in payload properties
-            let foundBitmap: ImageBitmap | null = null;
-            if (payload) {
-              for (const k of Object.keys(payload)) {
-                const v = (payload as any)[k];
-                if (v && typeof v === 'object' && 'close' in v && typeof v.close === 'function') {
-                  foundBitmap = v as ImageBitmap;
-                  break;
+            if (payload?.type === 'bitmap') {
+              let bitmap: ImageBitmap | null = null;
+              if (payload.bitmap && payload.bitmap instanceof ImageBitmap) {
+                bitmap = payload.bitmap;
+              } else if (payload) {
+                for (const key of Object.keys(payload)) {
+                  const value = (payload as any)[key];
+                  if (value instanceof ImageBitmap) {
+                    bitmap = value;
+                    break;
+                  }
                 }
               }
-            }
-            if (foundBitmap) {
-              if (latestBitmapRef.current && latestBitmapRef.current !== foundBitmap) {
-                try { latestBitmapRef.current.close(); } catch (e) {}
+              if (bitmap) {
+                if (latestBitmapRef.current && latestBitmapRef.current !== bitmap) {
+                  try { latestBitmapRef.current.close(); } catch (e) {}
+                }
+                latestBitmapRef.current = bitmap;
+                latestFrameMetaRef.current = { 
+                  timestamp: payload.timestamp ?? timestamp, 
+                  bytes: payload.bytes ?? bytes, 
+                  cursors: payload.cursors ?? cursors 
+                };
+                setFrameMetadata({
+                  width: payload.width || bitmap.width,
+                  height: payload.height || bitmap.height,
+                  cursors: payload.cursors ?? cursors,
+                });
               }
-              latestBitmapRef.current = foundBitmap;
-              latestFrameMetaRef.current = { timestamp: payload?.timestamp ?? timestamp, bytes, cursors };
             }
           };
         }
@@ -487,7 +512,8 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
     sendFile,
     resetError,
     canvasRef,
-  }), [connect, disconnect, sendChat, sendFile, sendInput, resetError, state]);
+    frameMetadata, // Expose frame metadata (width, height, cursors)
+  }), [connect, disconnect, sendChat, sendFile, sendInput, resetError, state, frameMetadata]);
 
   return api;
 };
