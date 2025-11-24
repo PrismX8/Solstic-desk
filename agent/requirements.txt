@@ -1,0 +1,8 @@
+websockets==13.1
+mss==9.0.1
+Pillow==11.0.0
+pyautogui==0.9.54
+pynput==1.7.7
+rich==13.9.4
+python-dotenv==1.0.1
+

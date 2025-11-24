@@ -1,0 +1,25 @@
+{
+  "name": "solstice-desk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A full-stack remote assistance platform inspired by AnyDesk.",
+  "workspaces": [
+    "server",
+    "web",
+    "desktop"
+  ],
+  "scripts": {
+    "dev:server": "npm --workspace server run dev",
+    "dev:web": "npm --workspace web run dev",
+    "dev:desktop": "npm --workspace desktop run dev",
+    "build": "npm --workspaces run build",
+    "dist:desktop": "npm --workspace web run build && npm --workspace desktop run dist",
+    "lint": "npm --workspaces run lint",
+    "format": "npm --workspaces run format"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "license": "Apache-2.0"
+}
+

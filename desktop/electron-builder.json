@@ -1,0 +1,26 @@
+{
+  "appId": "com.solstice.desk",
+  "productName": "Solstice Desk",
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "main.js",
+    "preload.js",
+    "package.json",
+    "host/**/*",
+    "native/**/*",
+    "build/Release/**/*",
+    "resources/ui/**/*"
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ]
+  },
+  "publish": []
+}
+

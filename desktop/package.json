@@ -1,0 +1,33 @@
+{
+  "name": "solstice-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron shell for Solstice Desk viewer.",
+  "author": "Solstice Desk",
+  "gypfile": true,
+  "main": "main.js",
+  "scripts": {
+    "dev": "cross-env ELECTRON_START_URL=http://localhost:5173 electron .",
+    "start": "electron .",
+    "sync-ui": "node ./scripts/sync-ui.mjs",
+    "clean": "node ./scripts/clean-release.mjs",
+    "build": "npm run sync-ui",
+    "dist": "npm run sync-ui && npm run clean && electron-builder --win",
+    "postinstall": "node -e \"require('node-gyp-build')('.')\"",
+    "lint": "echo \"No lint configured\"",
+    "format": "prettier --write \"*.{js,ts,mjs,json}\""
+  },
+  "dependencies": {
+    "node-addon-api": "^7.1.0",
+    "node-gyp-build": "^4.8.0",
+    "screenshot-desktop": "^1.14.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "32.2.0",
+    "electron-builder": "^25.1.8",
+    "cross-env": "^7.0.3",
+    "prettier": "^3.3.3"
+  }
+}
+

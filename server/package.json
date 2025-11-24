@@ -1,0 +1,36 @@
+{
+  "name": "solstice-server",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Relay/signalling server for Solstice Desk (AnyDesk-like).",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "dev": "nodemon --config nodemon.json",
+    "lint": "tsc --noEmit",
+    "format": "prettier --write \"src/**/*.ts\""
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "nanoid": "^5.0.7",
+    "pino": "^9.2.0",
+    "pino-pretty": "^11.0.0",
+    "uuid": "^11.0.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.7.5",
+    "@types/ws": "^8.5.12",
+    "nodemon": "^3.1.4",
+    "prettier": "^3.3.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3"
+  }
+}
+
