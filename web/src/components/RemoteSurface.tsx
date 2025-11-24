@@ -13,6 +13,7 @@ const clamp = (value: number) => Math.min(1, Math.max(0, value));
 export const RemoteSurface = ({ session }: Props) => {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const resizableRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const lastMouseMoveTime = useRef<number>(0);
@@ -20,7 +21,10 @@ export const RemoteSurface = ({ session }: Props) => {
   const [isControlling, setIsControlling] = useState(false);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [isResizing, setIsResizing] = useState(false);
+  const [resizeCorner, setResizeCorner] = useState<'nw' | 'ne' | 'sw' | 'se' | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const [containerPosition, setContainerPosition] = useState({ x: 0, y: 0 });
 
   // Optimize frame rendering - use requestAnimationFrame for smooth updates
   useEffect(() => {
@@ -78,42 +82,111 @@ export const RemoteSurface = ({ session }: Props) => {
 
   // Initialize container size
   useEffect(() => {
-    if (containerRef.current) {
-      const rect = containerRef.current.getBoundingClientRect();
-      setContainerSize({ width: rect.width, height: rect.height });
-    }
-  }, []);
+    const initSize = () => {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          // Only initialize if not already set
+          if (containerSize.width === 0 && containerSize.height === 0) {
+            setContainerSize({ width: rect.width, height: rect.height });
+          }
+        } else {
+          // Fallback: use parent or default size
+          const parent = containerRef.current.parentElement;
+          if (parent) {
+            const parentRect = parent.getBoundingClientRect();
+            if (containerSize.width === 0 && containerSize.height === 0) {
+              setContainerSize({ 
+                width: parentRect.width || 800, 
+                height: parentRect.height || 600 
+              });
+            }
+          } else if (containerSize.width === 0 && containerSize.height === 0) {
+            setContainerSize({ width: 800, height: 600 });
+          }
+        }
+      }
+    };
+    
+    // Try immediately
+    initSize();
+    
+    // Also try after a short delay to ensure layout is complete
+    const timeout = setTimeout(initSize, 100);
+    return () => clearTimeout(timeout);
+  }, [containerSize.width, containerSize.height]);
 
   // Handle window resize
   useEffect(() => {
     const handleResize = () => {
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
-        setContainerSize({ width: rect.width, height: rect.height });
+        if (rect.width > 0 && rect.height > 0) {
+          // Only update if we're not manually resizing
+          if (!isResizing) {
+            setContainerSize({ width: rect.width, height: rect.height });
+          }
+        }
       }
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  }, [isResizing]);
 
-  // Handle mouse resize
+  // Handle mouse resize from corners
   useEffect(() => {
-    if (!isResizing || !containerRef.current) return;
+    if (!isResizing || !resizeCorner || !resizableRef.current) return;
 
-    const rect = containerRef.current.getBoundingClientRect();
-    const startX = rect.left;
-    const startY = rect.top;
-    const startWidth = rect.width;
-    const startHeight = rect.height;
+    const rect = resizableRef.current.getBoundingClientRect();
+    // Get the corner position based on which corner we're dragging
+    const cornerX = resizeCorner === 'se' || resizeCorner === 'ne' ? rect.right : rect.left;
+    const cornerY = resizeCorner === 'se' || resizeCorner === 'sw' ? rect.bottom : rect.top;
+    const startMouseX = cornerX;
+    const startMouseY = cornerY;
+    const startWidth = containerSize.width || rect.width;
+    const startHeight = containerSize.height || rect.height;
+    const startPosX = containerPosition.x;
+    const startPosY = containerPosition.y;
 
     const handleMouseMove = (e: MouseEvent) => {
-      const newWidth = Math.max(400, startWidth + (e.clientX - startX - startWidth));
-      const newHeight = Math.max(300, startHeight + (e.clientY - startY - startHeight));
+      const deltaX = e.clientX - startMouseX;
+      const deltaY = e.clientY - startMouseY;
+      
+      let newWidth = startWidth;
+      let newHeight = startHeight;
+      let newX = startPosX;
+      let newY = startPosY;
+
+      switch (resizeCorner) {
+        case 'se': // Bottom-right
+          newWidth = Math.max(400, startWidth + deltaX);
+          newHeight = Math.max(300, startHeight + deltaY);
+          break;
+        case 'sw': // Bottom-left
+          newWidth = Math.max(400, startWidth - deltaX);
+          newHeight = Math.max(300, startHeight + deltaY);
+          newX = startPosX - (newWidth - startWidth);
+          break;
+        case 'ne': // Top-right
+          newWidth = Math.max(400, startWidth + deltaX);
+          newHeight = Math.max(300, startHeight - deltaY);
+          newY = startPosY - (newHeight - startHeight);
+          break;
+        case 'nw': // Top-left
+          newWidth = Math.max(400, startWidth - deltaX);
+          newHeight = Math.max(300, startHeight - deltaY);
+          newX = startPosX - (newWidth - startWidth);
+          newY = startPosY - (newHeight - startHeight);
+          break;
+      }
+
       setContainerSize({ width: newWidth, height: newHeight });
+      setContainerPosition({ x: newX, y: newY });
     };
 
     const handleMouseUp = () => {
       setIsResizing(false);
+      setResizeCorner(null);
     };
 
     document.addEventListener('mousemove', handleMouseMove);
@@ -123,7 +196,40 @@ export const RemoteSurface = ({ session }: Props) => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isResizing]);
+  }, [isResizing, resizeCorner, containerPosition, containerSize]);
+
+  // Handle dragging the container
+  useEffect(() => {
+    if (!isDragging || !resizableRef.current) return;
+
+    const rect = resizableRef.current.getBoundingClientRect();
+    const startMouseX = rect.left + containerPosition.x;
+    const startMouseY = rect.top + containerPosition.y;
+    const startPosX = containerPosition.x;
+    const startPosY = containerPosition.y;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const deltaX = e.clientX - startMouseX;
+      const deltaY = e.clientY - startMouseY;
+      
+      setContainerPosition({
+        x: startPosX + deltaX,
+        y: startPosY + deltaY,
+      });
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, containerPosition]);
 
   const calculateNormalizedCoords = (clientX: number, clientY: number) => {
     const rect = surfaceRef.current?.getBoundingClientRect();
@@ -162,6 +268,9 @@ export const RemoteSurface = ({ session }: Props) => {
   };
 
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    // Don't interfere with resize or dragging
+    if (isResizing || isDragging) return;
+    
     if (!isControlling || session.status !== 'connected') return;
     
     // Throttle mouse move events to max 60fps (16ms)
@@ -181,6 +290,9 @@ export const RemoteSurface = ({ session }: Props) => {
   };
 
   const handleMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
+    // Don't interfere with resize handles or dragging
+    if (isResizing || isDragging) return;
+    
     if (!isControlling || session.status !== 'connected') return;
     event.preventDefault();
     event.stopPropagation();
@@ -263,9 +375,21 @@ export const RemoteSurface = ({ session }: Props) => {
   };
 
   return (
-    <section className="glass-panel relative overflow-hidden">
+    <section className="glass-panel relative overflow-visible">
       <div className="flex items-center justify-between border-b border-white/5 px-6 py-4">
-        <div>
+        <div 
+          className={clsx(
+            "flex-1",
+            !isControlling && "cursor-move select-none"
+          )}
+          onMouseDown={(e) => {
+            // Only allow dragging when not controlling and not resizing
+            if (isControlling || isResizing) return;
+            e.preventDefault();
+            e.stopPropagation();
+            setIsDragging(true);
+          }}
+        >
           <p className="text-xs uppercase tracking-[0.4em] text-white/40">
             Remote Surface
           </p>
@@ -305,12 +429,24 @@ export const RemoteSurface = ({ session }: Props) => {
         ref={containerRef}
         className="relative"
         style={{
-          width: containerSize.width > 0 ? `${containerSize.width}px` : '100%',
-          height: containerSize.height > 0 ? `${containerSize.height}px` : 'auto',
           minHeight: '420px',
-          minWidth: '400px',
+          width: '100%',
+          overflow: 'visible',
         }}
       >
+        <div
+          ref={resizableRef}
+          className="relative"
+          style={{
+            width: containerSize.width > 0 ? `${containerSize.width}px` : '100%',
+            height: containerSize.height > 0 ? `${containerSize.height}px` : 'auto',
+            minHeight: '420px',
+            minWidth: '400px',
+            position: 'relative',
+            transform: `translate(${containerPosition.x}px, ${containerPosition.y}px)`,
+            zIndex: 1,
+          }}
+        >
         <div
           ref={surfaceRef}
           tabIndex={0}
@@ -453,18 +589,30 @@ export const RemoteSurface = ({ session }: Props) => {
           </div>
         )}
       </div>
-        {/* Resize handle */}
-        <div
-          className="absolute bottom-0 right-0 z-10 h-4 w-4 cursor-nwse-resize bg-white/10 hover:bg-white/20"
-          style={{
-            clipPath: 'polygon(100% 0, 0 100%, 100% 100%)',
-          }}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setIsResizing(true);
-          }}
-        />
+        {/* Resize handles on all corners - only visible when not controlling */}
+        {!isControlling && [
+          { corner: 'nw', position: 'top-0 left-0', cursor: 'nwse-resize' },
+          { corner: 'ne', position: 'top-0 right-0', cursor: 'nesw-resize' },
+          { corner: 'sw', position: 'bottom-0 left-0', cursor: 'nesw-resize' },
+          { corner: 'se', position: 'bottom-0 right-0', cursor: 'nwse-resize' },
+        ].map(({ corner, position, cursor }) => (
+          <div
+            key={corner}
+            className={`absolute ${position} z-10 h-6 w-6 bg-white/20 hover:bg-white/40 border border-white/30 rounded-sm transition-all`}
+            style={{
+              cursor,
+              pointerEvents: isControlling ? 'none' : 'auto',
+            }}
+            onMouseDown={(e) => {
+              if (isControlling) return;
+              e.preventDefault();
+              e.stopPropagation();
+              setResizeCorner(corner as 'nw' | 'ne' | 'sw' | 'se');
+              setIsResizing(true);
+            }}
+          />
+        ))}
+        </div>
       </div>
 
       <footer className="flex items-center justify-between border-t border-white/5 px-6 py-3 text-sm text-white/60">
