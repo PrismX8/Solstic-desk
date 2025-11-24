@@ -13,14 +13,27 @@
     "build/Release/**/*",
     "resources/ui/**/*"
   ],
+  "asarUnpack": [
+    "node_modules/screenshot-desktop/**/*"
+  ],
   "win": {
     "target": [
       {
         "target": "nsis",
         "arch": ["x64"]
       }
-    ]
+    ],
+    "publisherName": "Solstice Desk"
   },
-  "publish": []
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true
+  },
+  "publish": {
+    "provider": "generic",
+    "url": "https://railways.up.railway.app/api/updates"
+  }
 }
 

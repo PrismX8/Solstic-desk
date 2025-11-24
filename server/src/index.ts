@@ -4,6 +4,7 @@ import cors from 'cors';
 import { config } from './config.js';
 import healthRouter from './routes/health.js';
 import sessionRouter from './routes/sessionRoutes.js';
+import versionRouter from './routes/version.js';
 import { registerWebSocketServer } from './ws/server.js';
 import { logger } from './lib/logger.js';
 
@@ -27,6 +28,7 @@ app.get('/', (_req, res) => {
 
 app.use('/health', healthRouter);
 app.use('/api/sessions', sessionRouter);
+app.use('/api', versionRouter);
 
 const server = http.createServer(app);
 registerWebSocketServer(server);

@@ -7,7 +7,7 @@ import type {
 } from '../types/remote';
 
 const WS_URL =
-  import.meta.env.VITE_WS_URL?.replace(/\/$/, '') ?? 'ws://localhost:8080/ws';
+  import.meta.env.VITE_WS_URL?.replace(/\/$/, '') ?? 'wss://railways.up.railway.app/ws';
 
 const HEARTBEAT_INTERVAL = 8000;
 const FILE_CHUNK_SIZE = 64 * 1024;
@@ -198,7 +198,7 @@ export const useRemoteSession = (): RemoteSessionApi => {
           break;
         case 'frame':
           {
-            const { data, mime, width, height, bytes, timestamp } =
+            const { data, mime, width, height, bytes, timestamp, cursors } =
               message.payload;
             const src = `data:${mime};base64,${data}`;
             const now = Date.now();
@@ -209,7 +209,14 @@ export const useRemoteSession = (): RemoteSessionApi => {
             lastFrameTs.current = now;
             setState((prev) => ({
               ...prev,
-              frame: { src, width, height, bytes, timestamp: timestamp ?? now },
+              frame: {
+                src,
+                width,
+                height,
+                bytes,
+                timestamp: timestamp ?? now,
+                cursors: cursors || [],
+              },
               fps,
               latency: timestamp ? now - timestamp : prev.latency,
             }));

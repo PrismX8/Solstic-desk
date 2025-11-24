@@ -19,9 +19,13 @@ export const useHostSession = () => {
       }
     });
     const unsubscribe = hostApi.onState((next) => setState(next));
+    const unsubscribeLogs = hostApi.onLog?.((logData) => {
+      console.log(`[host] ${logData.message}`, ...logData.args);
+    });
     return () => {
       mounted = false;
       unsubscribe?.();
+      unsubscribeLogs?.();
     };
   }, [hostApi]);
 

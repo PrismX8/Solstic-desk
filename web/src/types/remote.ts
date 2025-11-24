@@ -2,12 +2,19 @@ export type RemoteStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
 export type ChatSender = 'agent' | 'viewer' | 'system';
 
+export interface RemoteCursor {
+  viewerId: string;
+  x: number;
+  y: number;
+}
+
 export interface RemoteFrame {
   src: string;
   width: number;
   height: number;
   bytes: number;
   timestamp: number;
+  cursors?: RemoteCursor[];
 }
 
 export interface ChatMessage {

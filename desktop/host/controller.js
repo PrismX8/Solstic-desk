@@ -2,12 +2,11 @@ const { EventEmitter } = require('node:events');
 const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
-const screenshot = require('screenshot-desktop');
 const WebSocket = require('ws');
-const { screen } = require('electron');
+const { screen, desktopCapturer } = require('electron');
 const { applyInputEvent } = require('./input');
 
-const DEFAULT_WS_URL = process.env.SOLSTICE_WS_URL || 'ws://localhost:8080/ws';
+const DEFAULT_WS_URL = process.env.SOLSTICE_WS_URL || 'wss://railways.up.railway.app/ws';
 const DOWNLOAD_DIR =
   process.env.SOLSTICE_DOWNLOAD_DIR ||
   path.join(os.homedir(), 'Downloads', 'Solstice');
@@ -25,17 +24,33 @@ class HostController extends EventEmitter {
     super();
     this.state = { ...defaultState };
     this.ws = null;
-    this.captureInterval = null;
+    this.frameInterval = null;
     this.heartbeatInterval = null;
     this.streaming = false;
-    this.sendingFrame = false;
+    this.processingFrame = false;
+    this.frameQueue = [];
     this.config = {
       wsUrl: DEFAULT_WS_URL,
-      fps: Number(process.env.SOLSTICE_HOST_FPS || 8),
-      quality: Number(process.env.SOLSTICE_HOST_QUALITY || 65),
+      fps: Number(process.env.SOLSTICE_HOST_FPS || 60),
+      quality: Number(process.env.SOLSTICE_HOST_QUALITY || 80),
     };
+
+    this.lastCaptureTime = 0;
+    this.actualFps = 0;
+    this.adaptiveFps = this.config.fps;
+    this.viewerCursors = new Map();
     this.fileBuffers = new Map();
+    this.performanceMetrics = {
+      frameTimes: [],
+      lastAdjustment: Date.now(),
+    };
+
     fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+
+    this.log = (msg, ...args) => {
+      console.log(`[host] ${msg}`, ...args);
+      this.emit('log', { message: msg, args, timestamp: Date.now() });
+    };
   }
 
   getState() {
@@ -48,15 +63,20 @@ class HostController extends EventEmitter {
   }
 
   async start(options = {}) {
-    if (this.ws) {
-      await this.stop();
-    }
+    if (this.ws) await this.stop();
     this.config = {
       ...this.config,
       wsUrl: options.wsUrl || this.config.wsUrl,
       fps: options.fps || this.config.fps,
       quality: options.quality || this.config.quality,
     };
+
+    // Reset adaptive FPS and performance metrics
+    this.adaptiveFps = this.config.fps;
+    this.frameQueue = [];
+    this.processingFrame = false;
+    this.performanceMetrics.lastAdjustment = Date.now();
+
     this.updateState({
       status: 'connecting',
       error: undefined,
@@ -64,19 +84,17 @@ class HostController extends EventEmitter {
       sessionCode: undefined,
       deviceName: options.deviceName || os.hostname(),
     });
+
     await this.openSocket();
   }
 
   async stop() {
     this.streaming = false;
-    if (this.captureInterval) {
-      clearInterval(this.captureInterval);
-      this.captureInterval = null;
-    }
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-    }
+    if (this.frameInterval) clearInterval(this.frameInterval);
+    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+    this.frameQueue = [];
+    this.processingFrame = false;
+
     if (this.ws) {
       this.ws.terminate();
       this.ws = null;
@@ -123,14 +141,10 @@ class HostController extends EventEmitter {
 
   cleanupSocket() {
     this.streaming = false;
-    if (this.captureInterval) {
-      clearInterval(this.captureInterval);
-      this.captureInterval = null;
-    }
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-    }
+    if (this.frameInterval) clearInterval(this.frameInterval);
+    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+    this.frameQueue = [];
+    this.processingFrame = false;
     if (this.ws) {
       this.ws.removeAllListeners();
       this.ws = null;
@@ -138,41 +152,166 @@ class HostController extends EventEmitter {
   }
 
   prepareLoops() {
-    if (!this.captureInterval) {
-      const interval = Math.max(1, Math.floor(1000 / this.config.fps));
-      this.captureInterval = setInterval(
-        () => this.captureFrame(),
-        interval,
-      );
-    }
-    if (!this.heartbeatInterval) {
-      this.heartbeatInterval = setInterval(() => {
-        this.send('heartbeat', { fps: this.config.fps });
-      }, 10000);
-    }
+    const interval = Math.max(1, Math.floor(1000 / this.adaptiveFps));
+    
+    // Clear any existing interval
+    if (this.frameInterval) clearInterval(this.frameInterval);
+    
+    this.frameInterval = setInterval(() => {
+      this.captureFrame();
+    }, interval);
+
+    this.heartbeatInterval = setInterval(() => {
+      this.send('heartbeat', { 
+        fps: this.actualFps || this.adaptiveFps,
+        queueSize: this.frameQueue.length 
+      });
+    }, 10000);
+  }
+
+  getQuality() {
+    if (this.frameQueue.length > 2) return 40; // Lower quality when backed up
+    if (this.frameQueue.length > 0) return 60; // Medium quality
+    return 80; // High quality when caught up
+  }
+
+  async getFastFrame() {
+    const mainDisplay = screen.getPrimaryDisplay();
+    
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: {
+        width: Math.floor(mainDisplay.size.width * 0.7), // Reduce resolution for speed
+        height: Math.floor(mainDisplay.size.height * 0.7),
+      }
+    });
+
+    const screenSource = sources.find(source => 
+      source.display_id === mainDisplay.id.toString()
+    ) || sources[0];
+
+    // Use dynamic quality based on performance
+    const quality = this.getQuality();
+    const jpeg = screenSource.thumbnail.toJPEG(quality);
+    const size = screenSource.thumbnail.getSize();
+
+    return {
+      buffer: jpeg,
+      width: size.width,
+      height: size.height,
+    };
   }
 
   async captureFrame() {
     if (!this.streaming) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    if (this.sendingFrame) return;
-    this.sendingFrame = true;
+    
+    // Don't queue if we're already backed up
+    if (this.frameQueue.length > 2) {
+      this.adjustFrameRate('decrease');
+      return; // Skip frame to catch up
+    }
+
+    // Adaptive frame skipping
+    if (this.frameQueue.length === 0 && this.adaptiveFps < this.config.fps) {
+      this.adjustFrameRate('increase');
+    }
+
     try {
-      const buffer = await screenshot({ format: 'jpg', quality: this.config.quality });
-      const { width, height } = screen.getPrimaryDisplay().size;
-      this.send('frame', {
+      const start = Date.now();
+      const { buffer, width, height } = await this.getFastFrame();
+      
+      const frameData = {
         data: buffer.toString('base64'),
         mime: 'image/jpeg',
         width,
         height,
         bytes: buffer.length,
         timestamp: Date.now(),
-      });
+        cursors: this.getActiveCursors(),
+      };
+
+      // Add to queue and process immediately
+      this.frameQueue.push(frameData);
+      this.processFrameQueue();
+
+      const captureTime = Date.now() - start;
+      if (captureTime > 16) {
+        this.log(`Slow frame: ${captureTime}ms`);
+      }
+
     } catch (error) {
       console.error('[host] capture error', error);
-    } finally {
-      this.sendingFrame = false;
+      this.log('Capture error: ' + error.message);
     }
+  }
+
+  async processFrameQueue() {
+    if (this.processingFrame || this.frameQueue.length === 0) return;
+    
+    this.processingFrame = true;
+    
+    while (this.frameQueue.length > 0) {
+      const frame = this.frameQueue.shift();
+      
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.send('frame', frame);
+      }
+      
+      // Calculate actual FPS
+      const now = Date.now();
+      if (this.lastCaptureTime) {
+        const delta = now - this.lastCaptureTime;
+        this.actualFps = Math.round(1000 / delta);
+      }
+      this.lastCaptureTime = now;
+      
+      // Small delay to prevent overwhelming the WebSocket
+      if (this.frameQueue.length > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+    }
+    
+    this.processingFrame = false;
+  }
+
+  adjustFrameRate(direction) {
+    const now = Date.now();
+    if (now - this.performanceMetrics.lastAdjustment < 2000) return; // Only adjust every 2 seconds
+    
+    if (direction === 'decrease') {
+      this.adaptiveFps = Math.max(5, this.adaptiveFps - 5);
+    } else {
+      this.adaptiveFps = Math.min(this.config.fps, this.adaptiveFps + 5);
+    }
+    
+    this.performanceMetrics.lastAdjustment = now;
+    
+    // Update interval
+    if (this.frameInterval) {
+      clearInterval(this.frameInterval);
+      const newInterval = Math.max(1, Math.floor(1000 / this.adaptiveFps));
+      this.frameInterval = setInterval(() => this.captureFrame(), newInterval);
+    }
+    
+    this.log(`Adaptive FPS adjustment: ${this.adaptiveFps}fps`);
+  }
+
+  getActiveCursors() {
+    const now = Date.now();
+    const active = [];
+    for (const [viewerId, cursor] of this.viewerCursors.entries()) {
+      if (now - cursor.timestamp < 1000) {
+        active.push({
+          viewerId,
+          x: cursor.x,
+          y: cursor.y,
+        });
+      } else {
+        this.viewerCursors.delete(viewerId);
+      }
+    }
+    return active;
   }
 
   handleMessage(message) {
@@ -184,26 +323,38 @@ class HostController extends EventEmitter {
           error: undefined,
         });
         break;
+
       case 'viewer_joined':
         this.streaming = true;
         this.updateState({ viewers: message.payload.totalViewers });
+        this.captureFrame();
         break;
+
       case 'viewer_left':
         this.updateState({ viewers: message.payload.totalViewers });
-        if ((message.payload.totalViewers || 0) <= 0) {
+        if (message.payload.totalViewers <= 0) {
           this.streaming = false;
         }
         break;
+
       case 'input_event':
         this.applyInput(message.payload);
+        if (message.payload.kind === 'mouse_move' && message.payload.viewerId) {
+          this.viewerCursors.set(message.payload.viewerId, {
+            x: message.payload.x,
+            y: message.payload.y,
+            viewerId: message.payload.viewerId,
+            timestamp: Date.now(),
+          });
+        }
         break;
+
       case 'file_offer':
         this.prepareFileBuffer(message.payload);
         break;
+
       case 'file_chunk':
         this.handleFileChunk(message.payload);
-        break;
-      default:
         break;
     }
   }
@@ -230,12 +381,13 @@ class HostController extends EventEmitter {
     if (payload.sender !== 'viewer') return;
     const buffer = this.fileBuffers.get(payload.fileId);
     if (!buffer) return;
+
     buffer.chunks[payload.index] = payload.data;
 
-    const completed =
-      buffer.chunks.filter((chunk) => typeof chunk === 'string').length >=
-      payload.total;
-    if (payload.done || completed) {
+    const complete =
+      buffer.chunks.filter((c) => typeof c === 'string').length >= payload.total;
+
+    if (payload.done || complete) {
       const merged = buffer.chunks.join('');
       const binary = Buffer.from(merged, 'base64');
       const fileName = `${Date.now()}-${buffer.name}`;
@@ -247,9 +399,15 @@ class HostController extends EventEmitter {
 
   send(type, payload) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    
+    // Check if WebSocket is backing up
+    if (this.ws.bufferedAmount > 1024 * 1024) { // 1MB backlog
+      this.log('WebSocket backlog, skipping frame');
+      return;
+    }
+    
     this.ws.send(JSON.stringify({ type, payload }));
   }
 }
 
 module.exports = { HostController };
-

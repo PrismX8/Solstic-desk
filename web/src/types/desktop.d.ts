@@ -11,6 +11,7 @@ export interface HostApi {
   stop: () => Promise<HostState>;
   getState: () => Promise<HostState>;
   onState: (callback: (state: HostState) => void) => () => void;
+  onLog?: (callback: (logData: { message: string; args: unknown[]; timestamp: number }) => void) => () => void;
 }
 
 declare global {
