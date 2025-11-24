@@ -32,7 +32,7 @@ class HostController extends EventEmitter {
     this.config = {
       wsUrl: DEFAULT_WS_URL,
       fps: Number(process.env.SOLSTICE_HOST_FPS || 60),
-      quality: Number(process.env.SOLSTICE_HOST_QUALITY || 80),
+      quality: Number(process.env.SOLSTICE_HOST_QUALITY || 70),
     };
 
     this.lastCaptureTime = 0;
@@ -44,6 +44,12 @@ class HostController extends EventEmitter {
       frameTimes: [],
       lastAdjustment: Date.now(),
     };
+    
+    // Cache screen source to avoid repeated lookups
+    this.cachedSource = null;
+    this.mainDisplay = null;
+    this.lastSourceRefresh = 0;
+    const SOURCE_CACHE_TTL = 30000; // Refresh source every 30 seconds
 
     fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
@@ -170,30 +176,44 @@ class HostController extends EventEmitter {
   }
 
   getQuality() {
-    if (this.frameQueue.length > 2) return 40; // Lower quality when backed up
-    if (this.frameQueue.length > 0) return 60; // Medium quality
-    return 80; // High quality when caught up
+    if (this.frameQueue.length > 2) return 50; // Lower quality when backed up
+    if (this.frameQueue.length > 0) return 65; // Medium quality
+    return 70; // Balanced quality when caught up (reduced from 80)
   }
 
   async getFastFrame() {
-    const mainDisplay = screen.getPrimaryDisplay();
+    const now = Date.now();
     
-    const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: {
-        width: Math.floor(mainDisplay.size.width * 0.7), // Reduce resolution for speed
-        height: Math.floor(mainDisplay.size.height * 0.7),
-      }
-    });
+    // Cache main display and source to avoid repeated lookups
+    if (!this.mainDisplay || now - this.lastSourceRefresh > 30000) {
+      this.mainDisplay = screen.getPrimaryDisplay();
+      this.lastSourceRefresh = now;
+    }
+    
+    // Use lower resolution for better performance (50% instead of 70%)
+    const targetWidth = Math.floor(this.mainDisplay.size.width * 0.5);
+    const targetHeight = Math.floor(this.mainDisplay.size.height * 0.5);
+    
+    // Only refresh source if cache is stale or doesn't exist
+    if (!this.cachedSource || now - this.lastSourceRefresh > 30000) {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: {
+          width: targetWidth,
+          height: targetHeight,
+        }
+      });
 
-    const screenSource = sources.find(source => 
-      source.display_id === mainDisplay.id.toString()
-    ) || sources[0];
+      this.cachedSource = sources.find(source => 
+        source.display_id === this.mainDisplay.id.toString()
+      ) || sources[0];
+      this.lastSourceRefresh = now;
+    }
 
     // Use dynamic quality based on performance
     const quality = this.getQuality();
-    const jpeg = screenSource.thumbnail.toJPEG(quality);
-    const size = screenSource.thumbnail.getSize();
+    const jpeg = this.cachedSource.thumbnail.toJPEG(quality);
+    const size = this.cachedSource.thumbnail.getSize();
 
     return {
       buffer: jpeg,
@@ -206,8 +226,8 @@ class HostController extends EventEmitter {
     if (!this.streaming) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     
-    // Don't queue if we're already backed up
-    if (this.frameQueue.length > 2) {
+    // More aggressive frame dropping when backed up
+    if (this.frameQueue.length > 1) {
       this.adjustFrameRate('decrease');
       return; // Skip frame to catch up
     }
@@ -220,6 +240,12 @@ class HostController extends EventEmitter {
     try {
       const start = Date.now();
       const { buffer, width, height } = await this.getFastFrame();
+      
+      // Skip if capture took too long (indicates system is overloaded)
+      const captureTime = Date.now() - start;
+      if (captureTime > 50) {
+        return; // Skip this frame
+      }
       
       const frameData = {
         data: buffer.toString('base64'),
@@ -235,7 +261,6 @@ class HostController extends EventEmitter {
       this.frameQueue.push(frameData);
       this.processFrameQueue();
 
-      const captureTime = Date.now() - start;
       if (captureTime > 16) {
         this.log(`Slow frame: ${captureTime}ms`);
       }
@@ -250,6 +275,13 @@ class HostController extends EventEmitter {
     if (this.processingFrame || this.frameQueue.length === 0) return;
     
     this.processingFrame = true;
+    
+    // Process frames more aggressively - only keep the latest frame if queue backs up
+    if (this.frameQueue.length > 1) {
+      // Keep only the most recent frame
+      const latestFrame = this.frameQueue[this.frameQueue.length - 1];
+      this.frameQueue = [latestFrame];
+    }
     
     while (this.frameQueue.length > 0) {
       const frame = this.frameQueue.shift();
@@ -266,10 +298,7 @@ class HostController extends EventEmitter {
       }
       this.lastCaptureTime = now;
       
-      // Small delay to prevent overwhelming the WebSocket
-      if (this.frameQueue.length > 0) {
-        await new Promise(resolve => setTimeout(resolve, 1));
-      }
+      // Remove delay - process immediately for better performance
     }
     
     this.processingFrame = false;

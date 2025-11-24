@@ -12,9 +12,57 @@ const clamp = (value: number) => Math.min(1, Math.max(0, value));
 
 export const RemoteSurface = ({ session }: Props) => {
   const surfaceRef = useRef<HTMLDivElement>(null);
-  const [fitMode, setFitMode] = useState<'contain' | 'fill' | 'actual'>('contain');
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const lastMouseMoveTime = useRef<number>(0);
+  const [fitMode, setFitMode] = useState<'contain' | 'actual'>('contain');
   const [isControlling, setIsControlling] = useState(false);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
+  const [isResizing, setIsResizing] = useState(false);
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+
+  // Optimize frame rendering - use requestAnimationFrame for smooth updates
+  useEffect(() => {
+    if (!session.frame || !canvasRef.current) return;
+    
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d', { 
+      alpha: false,
+      desynchronized: true, // Better performance
+      willReadFrequently: false 
+    });
+    if (!ctx) return;
+    
+    let rafId: number;
+    
+    // Use image caching to avoid reloading
+    if (!imageRef.current || imageRef.current.src !== session.frame.src) {
+      const img = new Image();
+      img.onload = () => {
+        rafId = requestAnimationFrame(() => {
+          if (canvas && ctx) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+          }
+        });
+      };
+      img.src = session.frame.src;
+      imageRef.current = img;
+    } else {
+      // Image already loaded, just redraw with RAF
+      rafId = requestAnimationFrame(() => {
+        if (canvas && ctx && imageRef.current?.complete) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(imageRef.current, 0, 0);
+        }
+      });
+    }
+    
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [session.frame]);
 
   useEffect(() => {
     if (session.status !== 'connected') {
@@ -28,87 +76,121 @@ export const RemoteSurface = ({ session }: Props) => {
     }
   }, [isControlling]);
 
+  // Initialize container size
   useEffect(() => {
-    if (fitMode === 'fill' && surfaceRef.current) {
-      // Enter fullscreen when fill mode is enabled
-      const enterFullscreen = async () => {
-        try {
-          if (surfaceRef.current && !document.fullscreenElement) {
-            await surfaceRef.current.requestFullscreen();
-          }
-        } catch (error) {
-          console.error('Failed to enter fullscreen:', error);
-        }
-      };
-      enterFullscreen();
-    } else {
-      // Exit fullscreen when leaving fill mode
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
-      }
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      setContainerSize({ width: rect.width, height: rect.height });
     }
-  }, [fitMode]);
+  }, []);
 
-  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isControlling || session.status !== 'connected') return;
+  // Handle window resize
+  useEffect(() => {
+    const handleResize = () => {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        setContainerSize({ width: rect.width, height: rect.height });
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Handle mouse resize
+  useEffect(() => {
+    if (!isResizing || !containerRef.current) return;
+
+    const rect = containerRef.current.getBoundingClientRect();
+    const startX = rect.left;
+    const startY = rect.top;
+    const startWidth = rect.width;
+    const startHeight = rect.height;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = Math.max(400, startWidth + (e.clientX - startX - startWidth));
+      const newHeight = Math.max(300, startHeight + (e.clientY - startY - startHeight));
+      setContainerSize({ width: newWidth, height: newHeight });
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing]);
+
+  const calculateNormalizedCoords = (clientX: number, clientY: number) => {
     const rect = surfaceRef.current?.getBoundingClientRect();
-    if (!rect || !session.frame) return;
+    if (!rect || !session.frame) return null;
     
-    // Calculate normalized coordinates based on fit mode
-    let x, y;
     const imgAspect = session.frame.width / session.frame.height;
     const containerAspect = rect.width / rect.height;
+    let x, y;
     
-    if (fitMode === 'fill') {
-      // For fill mode, map to the image coordinates directly
-      let scaleX, scaleY, offsetX = 0, offsetY = 0;
-      
-      if (imgAspect > containerAspect) {
-        // Image is wider - fit to height, crop width
-        scaleX = scaleY = rect.height / session.frame.height;
-        offsetX = (rect.width - session.frame.width * scaleX) / 2;
-      } else {
-        // Image is taller - fit to width, crop height
-        scaleX = scaleY = rect.width / session.frame.width;
-        offsetY = (rect.height - session.frame.height * scaleY) / 2;
-      }
-      
-      const localX = event.clientX - rect.left - offsetX;
-      const localY = event.clientY - rect.top - offsetY;
-      x = clamp(localX / (session.frame.width * scaleX));
-      y = clamp(localY / (session.frame.height * scaleY));
-    } else if (fitMode === 'contain') {
-      // For contain mode, use the existing logic
+    if (fitMode === 'contain') {
+      // For contain mode
       if (imgAspect > containerAspect) {
         const scale = rect.width / session.frame.width;
         const scaledHeight = session.frame.height * scale;
         const offsetY = (rect.height - scaledHeight) / 2;
-        const localX = event.clientX - rect.left;
-        const localY = event.clientY - rect.top - offsetY;
+        const localX = clientX - rect.left;
+        const localY = clientY - rect.top - offsetY;
         x = clamp(localX / rect.width);
         y = clamp(localY / scaledHeight);
       } else {
         const scale = rect.height / session.frame.height;
         const scaledWidth = session.frame.width * scale;
         const offsetX = (rect.width - scaledWidth) / 2;
-        const localX = event.clientX - rect.left - offsetX;
-        const localY = event.clientY - rect.top;
+        const localX = clientX - rect.left - offsetX;
+        const localY = clientY - rect.top;
         x = clamp(localX / scaledWidth);
         y = clamp(localY / rect.height);
       }
     } else {
       // Actual size mode
-      x = clamp((event.clientX - rect.left) / session.frame.width);
-      y = clamp((event.clientY - rect.top) / session.frame.height);
+      x = clamp((clientX - rect.left) / session.frame.width);
+      y = clamp((clientY - rect.top) / session.frame.height);
     }
     
-    setCursor({ x: event.clientX - rect.left, y: event.clientY - rect.top });
-    session.sendInput({ kind: 'mouse_move', x, y });
+    return { x, y };
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isControlling || session.status !== 'connected') return;
+    
+    // Throttle mouse move events to max 60fps (16ms)
+    const now = Date.now();
+    if (now - lastMouseMoveTime.current < 16) return;
+    lastMouseMoveTime.current = now;
+    
+    const coords = calculateNormalizedCoords(event.clientX, event.clientY);
+    if (!coords) return;
+    
+    const rect = surfaceRef.current?.getBoundingClientRect();
+    if (rect) {
+      setCursor({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+    }
+    
+    session.sendInput({ kind: 'mouse_move', x: coords.x, y: coords.y });
   };
 
   const handleMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!isControlling) return;
+    if (!isControlling || session.status !== 'connected') return;
     event.preventDefault();
+    event.stopPropagation();
+    
+    // Send mouse position with click
+    const coords = calculateNormalizedCoords(event.clientX, event.clientY);
+    if (coords) {
+      session.sendInput({ kind: 'mouse_move', x: coords.x, y: coords.y });
+    }
+    
     const button =
       event.button === 1
         ? 'middle'
@@ -119,8 +201,10 @@ export const RemoteSurface = ({ session }: Props) => {
   };
 
   const handleMouseUp = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!isControlling) return;
+    if (!isControlling || session.status !== 'connected') return;
     event.preventDefault();
+    event.stopPropagation();
+    
     const button =
       event.button === 1
         ? 'middle'
@@ -200,16 +284,12 @@ export const RemoteSurface = ({ session }: Props) => {
           />
           <ToolbarButton
             icon={<Expand />}
-            label={
-              fitMode === 'contain' ? 'Fill' : fitMode === 'fill' ? 'Fit' : 'Contain'
-            }
+            label={fitMode === 'contain' ? 'Actual Size' : 'Fit'}
             hotkey="F"
             onClick={() =>
-              setFitMode((mode) => 
-                mode === 'contain' ? 'fill' : mode === 'fill' ? 'actual' : 'contain'
-              )
+              setFitMode((mode) => (mode === 'contain' ? 'actual' : 'contain'))
             }
-            active={fitMode === 'fill' || fitMode === 'actual'}
+            active={fitMode === 'actual'}
             disabled={!session.frame}
           />
           <ToolbarButton
@@ -222,30 +302,42 @@ export const RemoteSurface = ({ session }: Props) => {
       </div>
 
       <div
-        ref={surfaceRef}
-        tabIndex={0}
-        className={clsx(
-          'relative flex min-h-[420px] items-center justify-center bg-[#040714]',
-          fitMode === 'contain' || fitMode === 'fill' ? 'overflow-hidden' : 'overflow-auto',
-          isControlling && 'cursor-none',
-          fitMode === 'fill' && 'h-screen w-screen',
-        )}
+        ref={containerRef}
+        className="relative"
+        style={{
+          width: containerSize.width > 0 ? `${containerSize.width}px` : '100%',
+          height: containerSize.height > 0 ? `${containerSize.height}px` : 'auto',
+          minHeight: '420px',
+          minWidth: '400px',
+        }}
+      >
+        <div
+          ref={surfaceRef}
+          tabIndex={0}
+          className={clsx(
+            'relative flex h-full w-full items-center justify-center bg-[#040714]',
+            fitMode === 'contain' ? 'overflow-hidden' : 'overflow-auto',
+            isControlling && 'cursor-none',
+          )}
         onPointerMove={handlePointerMove}
         onMouseEnter={(e) => {
           if (isControlling && surfaceRef.current) {
             surfaceRef.current.focus();
-            // Start controlling immediately on hover
-            if (session.status === 'connected' && session.frame) {
-              const rect = surfaceRef.current.getBoundingClientRect();
-              const x = clamp((e.clientX - rect.left) / rect.width);
-              const y = clamp((e.clientY - rect.top) / rect.height);
-              session.sendInput({ kind: 'mouse_move', x, y });
+            // Send initial mouse position immediately on hover
+            if (session.status === 'connected') {
+              const coords = calculateNormalizedCoords(e.clientX, e.clientY);
+              if (coords) {
+                session.sendInput({ kind: 'mouse_move', x: coords.x, y: coords.y });
+              }
             }
           }
         }}
-        onPointerEnter={() => {
-          if (isControlling && surfaceRef.current) {
-            surfaceRef.current.focus();
+        onMouseLeave={() => {
+          // Release any pointer capture
+          if (surfaceRef.current && surfaceRef.current.releasePointerCapture) {
+            try {
+              surfaceRef.current.releasePointerCapture(1);
+            } catch {}
           }
         }}
         onMouseDown={handleMouseDown}
@@ -258,16 +350,15 @@ export const RemoteSurface = ({ session }: Props) => {
         }}
       >
         {session.frame ? (
-          <img
-            src={session.frame.src}
-            alt="Remote desktop feed"
+          <canvas
+            ref={canvasRef}
+            width={session.frame.width}
+            height={session.frame.height}
             className={clsx(
-              'select-none border border-white/5 shadow-2xl transition',
-              fitMode === 'fill'
-                ? 'h-full w-full object-cover rounded-none border-0'
-                : fitMode === 'contain'
-                ? 'max-h-[540px] max-w-full object-contain rounded-2xl'
-                : 'h-auto w-auto rounded-2xl',
+              'select-none border border-white/5 shadow-2xl rounded-2xl',
+              fitMode === 'contain'
+                ? 'max-h-full max-w-full'
+                : '',
             )}
             style={
               fitMode === 'actual'
@@ -275,9 +366,12 @@ export const RemoteSurface = ({ session }: Props) => {
                     width: `${session.frame.width}px`,
                     height: `${session.frame.height}px`,
                   }
-                : undefined
+                : {
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'contain',
+                  }
             }
-            draggable={false}
           />
         ) : (
           <div className="flex flex-col items-center gap-2 text-center text-white/50">
@@ -325,16 +419,6 @@ export const RemoteSurface = ({ session }: Props) => {
                   scaleX = scaleY = rect.height / session.frame.height;
                   offsetX = (rect.width - session.frame.width * scaleX) / 2;
                 }
-              } else if (fitMode === 'fill') {
-                if (imgAspect > containerAspect) {
-                  // Image is wider - fit to height, crop width
-                  scaleX = scaleY = rect.height / session.frame.height;
-                  offsetX = (rect.width - session.frame.width * scaleX) / 2;
-                } else {
-                  // Image is taller - fit to width, crop height
-                  scaleX = scaleY = rect.width / session.frame.width;
-                  offsetY = (rect.height - session.frame.height * scaleY) / 2;
-                }
               } else {
                 // Actual size
                 scaleX = rect.width / session.frame.width;
@@ -368,6 +452,19 @@ export const RemoteSurface = ({ session }: Props) => {
             })}
           </div>
         )}
+      </div>
+        {/* Resize handle */}
+        <div
+          className="absolute bottom-0 right-0 z-10 h-4 w-4 cursor-nwse-resize bg-white/10 hover:bg-white/20"
+          style={{
+            clipPath: 'polygon(100% 0, 0 100%, 100% 100%)',
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsResizing(true);
+          }}
+        />
       </div>
 
       <footer className="flex items-center justify-between border-t border-white/5 px-6 py-3 text-sm text-white/60">

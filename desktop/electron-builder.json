@@ -31,9 +31,12 @@
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true
   },
-  "publish": {
-    "provider": "generic",
-    "url": "https://railways.up.railway.app/api/updates"
-  }
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "PrismX8",
+      "repo": "Solstic-desk"
+    }
+  ]
 }
 

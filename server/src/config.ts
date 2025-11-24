@@ -11,7 +11,7 @@ const envSchema = z.object({
   SESSION_TTL_MS: z.coerce.number().int().positive().default(15 * 60 * 1000),
   WS_HEARTBEAT_MS: z.coerce.number().int().positive().default(15_000),
   MAX_VIEWERS: z.coerce.number().int().positive().default(3),
-  MAX_FRAME_QUEUE: z.coerce.number().int().min(1).default(5),
+  MAX_FRAME_QUEUE: z.coerce.number().int().min(1).default(2),
   CORS_ORIGINS: z
     .string()
     .default('http://localhost:5173,http://127.0.0.1:5173'),

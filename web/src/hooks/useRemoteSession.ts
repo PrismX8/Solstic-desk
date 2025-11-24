@@ -51,16 +51,55 @@ export const useRemoteSession = (): RemoteSessionApi => {
   const heartbeatRef = useRef<number | undefined>(undefined);
   const fileBufferRef = useRef<Record<string, InboundFileBuffer>>({});
   const lastFrameTs = useRef<number>(0);
+  const frameThrottleRef = useRef<number>(0);
+  const pendingFrameRef = useRef<any>(null);
+  const rafRef = useRef<number | undefined>(undefined);
+
+  const updateFrameFromPending = useCallback(() => {
+    if (!pendingFrameRef.current) return;
+    
+    const { data, mime, width, height, bytes, timestamp, cursors } = pendingFrameRef.current;
+    const src = `data:${mime};base64,${data}`;
+    const now = Date.now();
+    const delta = lastFrameTs.current
+      ? now - lastFrameTs.current
+      : undefined;
+    lastFrameTs.current = now;
+    
+    setState((prev) => {
+      const fps = delta ? Math.round(1000 / delta) : prev.fps;
+      return {
+        ...prev,
+        frame: {
+          src,
+          width,
+          height,
+          bytes,
+          timestamp: timestamp ?? now,
+          cursors: cursors || [],
+        },
+        fps,
+        latency: timestamp ? now - timestamp : prev.latency,
+      };
+    });
+    
+    pendingFrameRef.current = null;
+  }, []);
 
   const cleanupSocket = useCallback(() => {
     if (heartbeatRef.current) {
       window.clearInterval(heartbeatRef.current);
       heartbeatRef.current = undefined;
     }
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = undefined;
+    }
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.close(1000, 'client_cleanup');
     }
     wsRef.current = null;
+    pendingFrameRef.current = null;
   }, []);
 
   const addActivity = useCallback(
@@ -180,7 +219,10 @@ export const useRemoteSession = (): RemoteSessionApi => {
             tone: 'success',
           });
           heartbeatRef.current = window.setInterval(() => {
-            sendMessage('heartbeat', { latency: state.latency });
+            setState((prev) => {
+              sendMessage('heartbeat', { latency: prev.latency });
+              return prev;
+            });
           }, HEARTBEAT_INTERVAL);
           break;
         case 'session_rejected':
@@ -200,26 +242,34 @@ export const useRemoteSession = (): RemoteSessionApi => {
           {
             const { data, mime, width, height, bytes, timestamp, cursors } =
               message.payload;
-            const src = `data:${mime};base64,${data}`;
+            
+            // Throttle frame updates to max 60fps (16ms between frames)
             const now = Date.now();
-            const delta = lastFrameTs.current
-              ? now - lastFrameTs.current
-              : undefined;
-            const fps = delta ? Math.round(1000 / delta) : state.fps;
-            lastFrameTs.current = now;
-            setState((prev) => ({
-              ...prev,
-              frame: {
-                src,
-                width,
-                height,
-                bytes,
-                timestamp: timestamp ?? now,
-                cursors: cursors || [],
-              },
-              fps,
-              latency: timestamp ? now - timestamp : prev.latency,
-            }));
+            const timeSinceLastFrame = now - lastFrameTs.current;
+            
+            // Store pending frame
+            pendingFrameRef.current = {
+              data,
+              mime,
+              width,
+              height,
+              bytes,
+              timestamp,
+              cursors,
+            };
+            
+            // If enough time has passed, update immediately
+            if (timeSinceLastFrame >= 16 || lastFrameTs.current === 0) {
+              updateFrameFromPending();
+            } else {
+              // Schedule update via requestAnimationFrame for smooth rendering
+              if (!rafRef.current) {
+                rafRef.current = requestAnimationFrame(() => {
+                  rafRef.current = undefined;
+                  updateFrameFromPending();
+                });
+              }
+            }
           }
           break;
         case 'chat_message':
@@ -304,7 +354,7 @@ export const useRemoteSession = (): RemoteSessionApi => {
           break;
       }
     },
-    [addActivity, cleanupSocket, sendMessage, state.fps, state.latency, updateTransfers],
+    [addActivity, cleanupSocket, sendMessage, updateTransfers, updateFrameFromPending],
   );
 
   useEffect(() => () => cleanupSocket(), [cleanupSocket]);

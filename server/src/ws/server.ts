@@ -194,14 +194,17 @@ function handleFrame(payload: unknown, ctx: ClientContext): void {
   if (!data.success) return;
 
   if (!sessionStore.markFrameQueued(ctx.sessionCode)) {
-    return;
+    return; // Drop frame if queue is full
   }
 
   const session = sessionStore.getSessionByCode(ctx.sessionCode);
   if (!session) return;
 
+  // Send frame to all viewers - check if socket is ready
   session.viewers.forEach((viewer) => {
-    send(viewer.socket, { type: 'frame', payload: data.data });
+    if (viewer.socket.readyState === viewer.socket.OPEN) {
+      send(viewer.socket, { type: 'frame', payload: data.data });
+    }
   });
 
   sessionStore.markFrameDelivered(ctx.sessionCode);
