@@ -43,6 +43,13 @@ export interface TransferItem {
   progress: number;
 }
 
+export interface ConnectOptions {
+  viewOnly: boolean;
+  clipboardSync: boolean;
+  fileTransfer: 'full' | 'download' | 'upload';
+  quality: 'balanced' | 'performance' | 'lossless';
+}
+
 export interface RemoteSessionState {
   status: RemoteStatus;
   code?: string;
@@ -58,10 +65,11 @@ export interface RemoteSessionState {
   chat: ChatMessage[];
   activity: ActivityEntry[];
   transfers: TransferItem[];
+  connectOptions: ConnectOptions;
 }
 
 export interface RemoteSessionApi extends RemoteSessionState {
-  connect: (code: string, nickname: string) => void;
+  connect: (code: string, nickname: string, options?: Partial<ConnectOptions>) => void;
   disconnect: () => void;
   sendInput: (payload: Record<string, unknown>) => void;
   sendChat: (message: string) => void;

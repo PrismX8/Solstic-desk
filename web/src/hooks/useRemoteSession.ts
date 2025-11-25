@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ActivityEntry,
+  ConnectOptions,
   RemoteSessionApi,
   RemoteSessionState,
   TransferItem,
@@ -12,6 +13,13 @@ const WS_URL =
 const HEARTBEAT_INTERVAL = 8000;
 const FILE_CHUNK_SIZE = 64 * 1024;
 
+const defaultConnectOptions: ConnectOptions = {
+  viewOnly: false,
+  clipboardSync: true,
+  fileTransfer: 'full',
+  quality: 'balanced',
+};
+
 /* initial state simplified: we will NOT store frames in React state */
 const initialState: RemoteSessionState = {
   status: 'idle',
@@ -20,6 +28,7 @@ const initialState: RemoteSessionState = {
   chat: [],
   activity: [],
   transfers: [],
+  connectOptions: defaultConnectOptions,
 };
 
 const makeId = () =>
@@ -433,15 +442,27 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
   }, [addActivity, cleanupSocket, createDecoderWorker, sendMessage, updateTransfers]);
 
   // connect/disconnect/send functions
-  const connect = useCallback((code: string, nickname: string) => {
+  const connect = useCallback((code: string, nickname: string, options?: Partial<ConnectOptions>) => {
     cleanupSocket();
     const socket = new WebSocket(`${WS_URL}?role=viewer&ts=${Date.now()}`);
     wsRef.current = socket;
-    setState((prev) => ({ ...prev, status: 'connecting', code, nickname, error: undefined }));
-    addActivity({ label: `Connecting to ${code}`, tone: 'info' });
+    const mergedOptions = { ...defaultConnectOptions, ...options };
+    setState((prev) => ({
+      ...prev,
+      status: 'connecting',
+      code,
+      nickname,
+      connectOptions: mergedOptions,
+      error: undefined,
+    }));
+    addActivity({
+      label: `Connecting to ${code}`,
+      detail: `${mergedOptions.viewOnly ? 'View-only' : 'Full control'} · ${mergedOptions.quality}`,
+      tone: 'info',
+    });
 
     socket.onopen = () => {
-      sendMessage('viewer_join', { code, nickname });
+      sendMessage('viewer_join', { code, nickname, options: mergedOptions });
     };
 
     socket.onmessage = (ev) => {
