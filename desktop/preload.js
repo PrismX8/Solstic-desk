@@ -4,6 +4,9 @@ const hostApi = {
   start: (options) => ipcRenderer.invoke('host:start', options || {}),
   stop: () => ipcRenderer.invoke('host:stop'),
   getState: () => ipcRenderer.invoke('host:getState'),
+  applyInput: (payload) => ipcRenderer.invoke('host:applyInput', payload),
+  listCaptureSources: () => ipcRenderer.invoke('host:listCaptureSources'),
+  setCaptureSource: (sourceId) => ipcRenderer.invoke('host:setCaptureSource', sourceId),
   onState: (callback) => {
     const handler = (_event, state) => callback(state);
     ipcRenderer.on('host:state', handler);

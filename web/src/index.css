@@ -6,7 +6,7 @@
 
 :root {
   color: #f8fbff;
-  background-color: #050714;
+  background-color: #071016;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -19,16 +19,17 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: radial-gradient(circle at 20% 20%, rgba(94, 240, 255, 0.12), transparent 45%),
-    radial-gradient(circle at 80% 0%, rgba(95, 100, 245, 0.15), transparent 35%),
-    #050714;
+  background:
+    linear-gradient(135deg, rgba(94, 240, 255, 0.08), transparent 28%),
+    linear-gradient(215deg, rgba(19, 185, 129, 0.09), transparent 32%),
+    linear-gradient(180deg, #0b141a 0%, #071016 48%, #05080d 100%);
   font-family: 'Inter', 'Inter var', system-ui, sans-serif;
 }
 
 .glass-panel {
-  background: rgba(11, 17, 34, 0.72);
-  border: 1px solid rgba(94, 240, 255, 0.08);
-  border-radius: 1.25rem;
-  box-shadow: 0 10px 30px rgba(5, 7, 20, 0.55);
-  backdrop-filter: blur(20px);
+  background: rgba(11, 19, 24, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.875rem;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(18px);
 }

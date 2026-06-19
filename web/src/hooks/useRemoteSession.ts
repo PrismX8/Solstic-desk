@@ -1,18 +1,22 @@
+// File: src/hooks/useRemoteSession.ts
+/* eslint-disable react-hooks/immutability, react-hooks/exhaustive-deps */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Peer, { type DataConnection } from 'peerjs';
 import type {
   ActivityEntry,
+  ChatSender,
+  RemoteCursor,
+  RemoteFrameMetadata,
   RemoteSessionApi,
   RemoteSessionState,
   TransferItem,
 } from '../types/remote';
 
-const WS_URL =
-  import.meta.env.VITE_WS_URL?.replace(/\/$/, '') ?? 'wss://railways.up.railway.app/ws';
-
 const HEARTBEAT_INTERVAL = 8000;
+const PEER_PREFIX = 'solstice-';
 const FILE_CHUNK_SIZE = 64 * 1024;
+const META_THROTTLE_MS = 250;
 
-/* initial state simplified: we will NOT store frames in React state */
 const initialState: RemoteSessionState = {
   status: 'idle',
   viewers: 0,
@@ -44,33 +48,142 @@ type InboundFileBuffer = {
   chunks: string[];
 };
 
+type CanvasSource = ImageBitmap | HTMLImageElement | HTMLVideoElement;
+type WorkerFrameMeta = {
+  timestamp?: number;
+  bytes?: number;
+  cursors?: RemoteCursor[];
+};
+type FrameMessagePayload = {
+  data: string;
+  mime?: string;
+  bytes?: number;
+  timestamp?: number;
+  cursors?: RemoteCursor[];
+};
+type ServerMessage = {
+  type: string;
+  payload?: Record<string, unknown>;
+};
+type DecoderMessage =
+  | {
+      type: 'bitmap';
+      bitmap?: ImageBitmap;
+      width: number;
+      height: number;
+      timestamp?: number;
+      cursors?: RemoteCursor[];
+      bytes?: number;
+    }
+  | {
+      type: 'frame_raw';
+      b64: string;
+      mime?: string;
+      timestamp?: number;
+      cursors?: RemoteCursor[];
+      bytes?: number;
+    }
+  | {
+      type: 'error';
+      message?: string;
+    };
+
+const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
 /**
- * New hook: decodes frames in a worker and renders to canvas.
- *
- * Returns the same API + `canvasRef` (attach to <canvas />).
+ * Robustly decode base64->ImageBitmap on main thread as a fallback.
  */
-export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObject<HTMLCanvasElement> } => {
+async function decodeOnMainThread(b64: string, mime = 'image/jpeg'): Promise<CanvasSource> {
+  if (typeof createImageBitmap === 'function') {
+    const byteStr = atob(b64);
+    const len = byteStr.length;
+    const buf = new Uint8Array(len);
+    for (let i = 0; i < len; i++) buf[i] = byteStr.charCodeAt(i);
+    const blob = new Blob([buf], { type: mime });
+    return await createImageBitmap(blob);
+  }
+  // Last-resort fallback with <img> (no worker/GPU decode)
+  const img = new Image();
+  img.decoding = 'async';
+  img.src = `data:${mime};base64,${b64}`;
+  await img.decode().catch(
+    () =>
+      new Promise<void>((res, rej) => {
+        img.onload = () => res();
+        img.onerror = (e) => rej(e);
+      }),
+  );
+  return img;
+}
+
+/**
+ * Build a tiny worker that decodes frames and posts transferable ImageBitmaps.
+ */
+function buildDecoderWorker(): Worker {
+  const workerSrc = `
+    self.onmessage = async (ev) => {
+      const msg = ev.data;
+      if (!msg) return;
+      if (msg.type === 'frame') {
+        const { data: b64, mime = 'image/jpeg', timestamp, cursors, bytes } = msg;
+        try {
+          if (typeof self.createImageBitmap !== 'function') {
+            self.postMessage({ type: 'frame_raw', b64, mime, timestamp, cursors, bytes });
+            return;
+          }
+          const bin = atob(b64);
+          const len = bin.length;
+          const u8 = new Uint8Array(len);
+          for (let i = 0; i < len; i++) u8[i] = bin.charCodeAt(i);
+          const bitmap = await createImageBitmap(new Blob([u8], { type: mime }));
+          self.postMessage({
+            type: 'bitmap',
+            bitmap,
+            width: bitmap.width,
+            height: bitmap.height,
+            timestamp, cursors, bytes
+          }, [bitmap]);
+        } catch (err) {
+          self.postMessage({ type: 'error', message: (err && err.message) || String(err) });
+        }
+      } else if (msg.type === 'close') {
+        self.close();
+      }
+    };
+  `;
+  const blob = new Blob([workerSrc], { type: 'application/javascript' });
+  return new Worker(URL.createObjectURL(blob));
+}
+
+/**
+ * Decodes frames in a worker and renders to a <canvas>. Fast & low-GC.
+ */
+export const useRemoteSession = (): RemoteSessionApi => {
   const [state, setState] = useState<RemoteSessionState>(initialState);
-  const wsRef = useRef<WebSocket | null>(null);
+  const peerRef = useRef<Peer | null>(null);
+  const connectionRef = useRef<DataConnection | null>(null);
+  const controlConnectionRef = useRef<DataConnection | null>(null);
   const heartbeatRef = useRef<number | undefined>(undefined);
   const fileBufferRef = useRef<Record<string, InboundFileBuffer>>({});
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
-  // Worker handshake
   const workerRef = useRef<Worker | null>(null);
+  const decoderBusyRef = useRef(false);
+  const pendingFrameRef = useRef<FrameMessagePayload | null>(null);
 
-  // rendering refs
-  const latestBitmapRef = useRef<ImageBitmap | null>(null);
-  const latestFrameMetaRef = useRef<{ timestamp?: number; bytes?: number; cursors?: any[] } | null>(null);
-  const wantRenderRef = useRef(false);
+  const latestFrameRef = useRef<CanvasSource | null>(null);
+  const latestMetaRef = useRef<WorkerFrameMeta | null>(null);
+  const metaLastPushedRef = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
-  const [frameMetadata, setFrameMetadata] = useState<{ width?: number; height?: number; cursors?: any[] } | null>(null);
+  const lastVideoTimeRef = useRef(-1);
 
-  // fps / telemetry sampling
+  const [frameMetadata, setFrameMetadata] = useState<RemoteFrameMetadata | null>(null);
+
+  // fps sampling
   const frameCounterRef = useRef(0);
-  const fpsSampleStartRef = useRef<number>(Date.now());
+  const fpsSampleStartRef = useRef<number>(0);
 
-  // keep activity / transfers minimal frequency updates
   const addActivity = useCallback((entry: Omit<ActivityEntry, 'id' | 'timestamp'>) => {
     setState((prev) => ({
       ...prev,
@@ -80,47 +193,153 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
 
   const updateTransfers = useCallback((update: TransferItem) => {
     setState((prev) => {
-      const existingIndex = prev.transfers.findIndex((t) => t.id === update.id);
+      const i = prev.transfers.findIndex((t) => t.id === update.id);
       const next = [...prev.transfers];
-      if (existingIndex >= 0) next[existingIndex] = { ...next[existingIndex], ...update };
+      if (i >= 0) next[i] = { ...next[i], ...update };
       else next.push(update);
       return { ...prev, transfers: next.slice(-10) };
     });
   }, []);
 
   const sendMessage = useCallback((type: string, payload: Record<string, unknown>) => {
-    const socket = wsRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-    socket.send(JSON.stringify({ type, payload }));
+    const preferred = type === 'input_event' ? controlConnectionRef.current : connectionRef.current;
+    const connection = preferred?.open ? preferred : connectionRef.current;
+    if (!connection?.open) return false;
+    connection.send({ type, payload });
     return true;
   }, []);
+
+  const closeBitmapIfAny = (src: CanvasSource | null) => {
+    if (src && 'close' in src && typeof (src as ImageBitmap).close === 'function') {
+      try {
+        (src as ImageBitmap).close();
+      } catch {
+        // ImageBitmap.close can throw if the bitmap is already detached.
+      }
+    }
+  };
+
+  function postFramePayload(frame: FrameMessagePayload) {
+    if (typeof frame.data !== 'string') return;
+    if (decoderBusyRef.current) {
+      pendingFrameRef.current = frame;
+      return;
+    }
+
+    decoderBusyRef.current = true;
+    ensureWorker().postMessage({
+      type: 'frame',
+      data: frame.data,
+      mime: frame.mime,
+      timestamp: frame.timestamp,
+      bytes: frame.bytes,
+      cursors: frame.cursors,
+    });
+  }
+
+  function flushDecoderQueue() {
+    decoderBusyRef.current = false;
+    const pending = pendingFrameRef.current;
+    pendingFrameRef.current = null;
+    if (pending) {
+      postFramePayload(pending);
+    }
+  }
+
+  const installWorkerHandlers = useCallback((worker: Worker) => {
+    worker.onmessage = async (ev: MessageEvent<DecoderMessage>) => {
+      const payload = ev.data;
+      if (!payload) return;
+
+      if (payload.type === 'bitmap') {
+        const bitmap = payload.bitmap;
+        if (bitmap) {
+          closeBitmapIfAny(latestFrameRef.current);
+          latestFrameRef.current = bitmap;
+          latestMetaRef.current = {
+            timestamp: payload.timestamp,
+            bytes: payload.bytes,
+            cursors: payload.cursors,
+          };
+        }
+        flushDecoderQueue();
+        return;
+      }
+
+      if (payload.type === 'frame_raw') {
+        try {
+          const decoded = await decodeOnMainThread(payload.b64, payload.mime);
+          closeBitmapIfAny(latestFrameRef.current);
+          latestFrameRef.current = decoded;
+          latestMetaRef.current = {
+            timestamp: payload.timestamp,
+            bytes: payload.bytes,
+            cursors: payload.cursors,
+          };
+        } catch (error) {
+          addActivity({
+            label: 'Decoder fallback failed',
+            detail: error instanceof Error ? error.message : String(error),
+            tone: 'danger',
+          });
+        }
+        flushDecoderQueue();
+        return;
+      }
+
+      if (payload.type === 'error') {
+        addActivity({
+          label: 'Decoder error',
+          detail: String(payload.message || 'unknown'),
+          tone: 'danger',
+        });
+        flushDecoderQueue();
+      }
+    };
+  }, [addActivity]);
+
+  const ensureWorker = useCallback(() => {
+    if (!workerRef.current) {
+      const worker = buildDecoderWorker();
+      installWorkerHandlers(worker);
+      workerRef.current = worker;
+    }
+    return workerRef.current;
+  }, [installWorkerHandlers]);
 
   const cleanupSocket = useCallback(() => {
     if (heartbeatRef.current) {
       window.clearInterval(heartbeatRef.current);
       heartbeatRef.current = undefined;
     }
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.close(1000, 'client_cleanup');
-    }
-    wsRef.current = null;
+    connectionRef.current?.close();
+    connectionRef.current = null;
+    controlConnectionRef.current?.close();
+    controlConnectionRef.current = null;
+    peerRef.current?.destroy();
+    peerRef.current = null;
 
-    // terminate worker and release resources
     if (workerRef.current) {
-      try { workerRef.current.terminate(); } catch (e) {}
+      try {
+        workerRef.current.terminate();
+      } catch {
+        // Worker termination is best effort during reconnect cleanup.
+      }
       workerRef.current = null;
     }
 
-    // release last bitmap
-    if (latestBitmapRef.current) {
-      try { latestBitmapRef.current.close(); } catch (e) {}
-      latestBitmapRef.current = null;
-    }
+    closeBitmapIfAny(latestFrameRef.current);
+    latestFrameRef.current = null;
+    latestMetaRef.current = null;
+    decoderBusyRef.current = false;
+    pendingFrameRef.current = null;
+    metaLastPushedRef.current = 0;
+    lastVideoTimeRef.current = -1;
+    ctxRef.current = null;
 
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
+    // Keep the canvas render loop alive across reconnects. Incoming frames are
+    // written to refs and drawn by RAF; stopping RAF here leaves a connected
+    // session with frames queued but nothing painting them.
   }, []);
 
   const disconnect = useCallback(() => {
@@ -129,194 +348,121 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
     addActivity({ label: 'Disconnected', tone: 'warning' });
   }, [addActivity, cleanupSocket]);
 
-  // Worker source (inline): decodes base64 -> Blob -> createImageBitmap -> postMessage(bitmap)
-  const createDecoderWorker = useCallback(() => {
-    const workerSrc = `
-      self.onmessage = async (ev) => {
-        const msg = ev.data;
-        try {
-          if (msg && msg.type === 'frame') {
-            const { data: b64, mime = 'image/jpeg', timestamp, cursors, bytes } = msg;
-            // decode base64 to binary
-            const binary = atob(b64);
-            const len = binary.length;
-            const buf = new Uint8Array(len);
-            for (let i = 0; i < len; i++) buf[i] = binary.charCodeAt(i);
-            // create Blob and then ImageBitmap
-            const blob = new Blob([buf], { type: mime });
-            const bitmap = await createImageBitmap(blob);
-            // Post bitmap as the first argument, metadata as properties
-            // When transferring, the bitmap is moved, so we include width/height in metadata
-            self.postMessage({
-              type: 'bitmap',
-              timestamp,
-              cursors,
-              bytes,
-              width: bitmap.width,
-              height: bitmap.height,
-              bitmap: bitmap
-            }, [bitmap]);
-          } else if (msg && msg.type === 'close') {
-            self.close();
-          }
-        } catch (err) {
-          self.postMessage({ type: 'error', message: err?.message ?? String(err) });
-        }
-      };
-    `;
-    const blob = new Blob([workerSrc], { type: 'application/javascript' });
-    return new Worker(URL.createObjectURL(blob));
-  }, []);
-
-  // Render loop: draws bitmap to canvas at RAF pace. Drops frames if new bitmap hasn't arrived.
   const renderLoop = useCallback(() => {
     const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx) {
-      rafRef.current = requestAnimationFrame(renderLoop);
+    if (!canvas) {
+      rafRef.current = requestAnimationFrame(() => renderLoop());
       return;
     }
 
-    // If we have an ImageBitmap available, draw it
-    const bitmap = latestBitmapRef.current;
-    if (bitmap) {
-      // Resize canvas to bitmap dims if needed (only when dims change)
-      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
+    let ctx = ctxRef.current;
+    if (!ctx) {
+      const contextAttributes: CanvasRenderingContext2DSettings = {
+        alpha: false,
+        desynchronized: true,
+      };
+      ctx =
+        canvas.getContext('2d', contextAttributes) || canvas.getContext('2d');
+      if (ctx) {
+        ctx.imageSmoothingEnabled = false;
+        ctx.globalCompositeOperation = 'copy';
+        ctxRef.current = ctx;
       }
+    }
 
-      // Draw bitmap (fast path - GPU accelerated)
+    if (!ctx) {
+      rafRef.current = requestAnimationFrame(() => renderLoop());
+      return;
+    }
+
+    const frame = latestFrameRef.current;
+    const isVideo = frame instanceof HTMLVideoElement;
+    const isNewVideoFrame =
+      !isVideo ||
+      (frame.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        frame.currentTime !== lastVideoTimeRef.current);
+    if (frame && isNewVideoFrame) {
+      const width = isVideo
+        ? frame.videoWidth
+        : frame.width ?? (frame as HTMLImageElement).naturalWidth ?? canvas.width;
+      const height = isVideo
+        ? frame.videoHeight
+        : frame.height ?? (frame as HTMLImageElement).naturalHeight ?? canvas.height;
+      if (!width || !height) {
+        rafRef.current = requestAnimationFrame(() => renderLoop());
+        return;
+      }
+      if (width && height && (canvas.width !== width || canvas.height !== height)) {
+        canvas.width = width;
+        canvas.height = height;
+      }
       try {
-        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      } catch (e) {
-        // defensive: sometimes drawImage can throw if bitmap closed
+        ctx.drawImage(frame as CanvasImageSource, 0, 0, canvas.width, canvas.height);
+      } catch {
+        // A dropped or detached frame should not stop the render loop.
+      }
+      if (isVideo) {
+        lastVideoTimeRef.current = frame.currentTime;
+      } else {
+        closeBitmapIfAny(frame);
+        latestFrameRef.current = null;
       }
 
-      // close previous bitmap to release memory if one exists older than this
-      // (we keep only latestBitmapRef; once drawn and replaced, previous should be closed)
-      // Note: We intentionally do NOT close the drawn bitmap here because the worker transfers it
-      // and we need the bitmap to remain valid until the next frame replaces it.
+      // fps
+      frameCounterRef.current += 1;
+      const t = Date.now();
+      const started = fpsSampleStartRef.current || t;
+      fpsSampleStartRef.current = started;
+      if (t - started >= 1000) {
+        const fps = Math.round((frameCounterRef.current * 1000) / (t - started));
+        setState((prev) => (prev.fps === fps ? prev : { ...prev, fps }));
+        fpsSampleStartRef.current = t;
+        frameCounterRef.current = 0;
+      }
+
+      // throttle metadata into React
+      const last = metaLastPushedRef.current;
+      const n = now();
+      if (last === 0 || n - last >= META_THROTTLE_MS) {
+        const meta = latestMetaRef.current || {};
+        setFrameMetadata({ width, height, cursors: meta.cursors ?? [] });
+        metaLastPushedRef.current = n;
+      }
     }
 
-    // telemetry: sample fps every second
-    frameCounterRef.current += 1;
-    const now = Date.now();
-    const started = fpsSampleStartRef.current;
-    if (now - started >= 1000) {
-      const fps = Math.round((frameCounterRef.current * 1000) / (now - started));
-      setState((prev) => ({ ...prev, fps }));
-      fpsSampleStartRef.current = now;
-      frameCounterRef.current = 0;
-    }
-
-    rafRef.current = requestAnimationFrame(renderLoop);
+    rafRef.current = requestAnimationFrame(() => renderLoop());
   }, []);
 
-  // Setup worker message handling once
+  // Init worker once
   useEffect(() => {
-    // create worker and hook messages
-    const w = createDecoderWorker();
-    workerRef.current = w;
+    const w = ensureWorker();
 
-    // message payload: if a transferable ImageBitmap arrives, it will be in event.dataTransfer or event.data?
-    // Browsers attach transferred ImageBitmap to event.data if they were posted as transferable.
-    // We'll handle both: event.data.bitmap or event.ports / event.dataTransfer not standard; instead
-    // when a bitmap is transferred, it arrives as part of message, but createImageBitmap transfer requires including it as transferable.
-    // Because worker posted with postMessage({type:'bitmap', timestamp, cursors}, [bitmap])
-    // The bitmap will be accessible as event.dataTransfer? actually it will be in event.data
-    w.onmessage = (ev) => {
-      const data = ev.data;
-      if (data?.type === 'bitmap') {
-        // The transferred ImageBitmap itself will be present as ev.dataTransfer? No — it's in ev.data's internal slot.
-        // However browsers put the transferable into event.data if you didn't include it in object. Some browsers set ev.data.bitmap === undefined
-        // To safely get the transferred ImageBitmap we examine ev.data and ev.dataTransferables via structured clone result.
-        // But in practice, the ImageBitmap will be available in ev.dataTransferables? Not accessible.
-        // Instead, we can use workaround: when posting the transferable alone, the worker could post the bitmap as sole second arg:
-        // postMessage(bitmap, [bitmap]); but we didn't implement that to include metadata.
-        // To be robust, we will expect the browser to attach the transferred ImageBitmap as ev.data?.0 or ev.data?.bitmap.
-      } else if (data?.type === 'error') {
-        console.error('[frame-decoder-worker] error', data.message);
-      }
-    };
-
-    // Handle worker messages - ImageBitmap is transferred separately
-    w.onmessage = (ev: MessageEvent) => {
-      const payload = ev.data;
-      if (payload?.type === 'bitmap') {
-        // When ImageBitmap is transferred, it should be accessible in the payload
-        // Try multiple ways to find it since browser implementations vary
-        let bitmap: ImageBitmap | null = null;
-        
-        // Method 1: Direct property (most common)
-        if (payload.bitmap && payload.bitmap instanceof ImageBitmap) {
-          bitmap = payload.bitmap;
-        }
-        // Method 2: Check all properties
-        else if (payload) {
-          for (const key of Object.keys(payload)) {
-            const value = (payload as any)[key];
-            if (value instanceof ImageBitmap) {
-              bitmap = value;
-              break;
-            }
-          }
-        }
-        // Method 3: Check if payload itself is ImageBitmap (unlikely but possible)
-        if (!bitmap && payload instanceof ImageBitmap) {
-          bitmap = payload;
-        }
-
-        if (bitmap) {
-          // Release previous bitmap
-          if (latestBitmapRef.current && latestBitmapRef.current !== bitmap) {
-            try { latestBitmapRef.current.close(); } catch (e) {}
-          }
-          latestBitmapRef.current = bitmap;
-          const meta = {
-            timestamp: payload.timestamp,
-            bytes: payload.bytes,
-            cursors: payload.cursors,
-          };
-          latestFrameMetaRef.current = meta;
-          // Update frame metadata state for component access
-          setFrameMetadata({
-            width: payload.width || bitmap.width,
-            height: payload.height || bitmap.height,
-            cursors: meta.cursors || [],
-          });
-          wantRenderRef.current = true;
-        } else {
-          console.warn('[frame-decoder] Received bitmap message but ImageBitmap not found in payload', payload);
-        }
-      } else if (payload?.type === 'error') {
-        console.error('[frame-decoder-worker] error', payload.message);
-      }
-    };
-
-    // start render loop
     if (!rafRef.current) rafRef.current = requestAnimationFrame(renderLoop);
 
     return () => {
-      try { w.terminate(); } catch (e) {}
+      try {
+        w.terminate();
+      } catch {
+        // Worker termination is best effort on unmount.
+      }
       workerRef.current = null;
     };
-  }, [createDecoderWorker, renderLoop]);
+  }, [ensureWorker, renderLoop]);
 
-  // handleMessage function (defined before connect to avoid "used before declaration" error)
-  const handleMessage = useCallback((message: any) => {
+  const handleMessage = useCallback((message: ServerMessage) => {
+    const payload = message.payload ?? {};
     switch (message.type) {
       case 'session_accept':
         setState((prev) => ({
           ...prev,
           status: 'connected',
-          deviceName: message.payload.deviceName,
-          os: message.payload.os,
-          region: message.payload.region,
-          viewers: message.payload.viewers ?? 1,
+          deviceName: String(payload.deviceName ?? ''),
+          os: String(payload.os ?? ''),
+          region: String(payload.region ?? ''),
+          viewers: typeof payload.viewers === 'number' ? payload.viewers : 1,
           error: undefined,
         }));
-        addActivity({ label: `Connected to ${message.payload.deviceName}`, tone: 'success' });
+        addActivity({ label: `Connected to ${String(payload.deviceName ?? 'host')}`, tone: 'success' });
         heartbeatRef.current = window.setInterval(() => {
           setState((prev) => {
             sendMessage('heartbeat', { latency: prev.latency });
@@ -326,102 +472,68 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
         break;
 
       case 'session_rejected':
-        setState((prev) => ({ ...prev, status: 'error', error: message.payload?.reason ?? 'Session rejected' }));
-        addActivity({ label: 'Session rejected', detail: message.payload?.reason, tone: 'danger' });
+        setState((prev) => ({ ...prev, status: 'error', error: String(payload.reason ?? 'Session rejected') }));
+        addActivity({ label: 'Session rejected', detail: String(payload.reason ?? ''), tone: 'danger' });
         cleanupSocket();
         break;
 
       case 'frame': {
-        // We expect payload.data to be base64 string
-        const { data, mime, bytes, timestamp, cursors } = message.payload;
-
-        // Worker should already exist from useEffect, but ensure it's created if needed
-        if (!workerRef.current) {
-          const newWorker = createDecoderWorker();
-          workerRef.current = newWorker;
-          // Set up message handler (same logic as in useEffect)
-          newWorker.onmessage = (ev: MessageEvent) => {
-            const payload = ev.data;
-            if (payload?.type === 'bitmap') {
-              let bitmap: ImageBitmap | null = null;
-              if (payload.bitmap && payload.bitmap instanceof ImageBitmap) {
-                bitmap = payload.bitmap;
-              } else if (payload) {
-                for (const key of Object.keys(payload)) {
-                  const value = (payload as any)[key];
-                  if (value instanceof ImageBitmap) {
-                    bitmap = value;
-                    break;
-                  }
-                }
-              }
-              if (bitmap) {
-                if (latestBitmapRef.current && latestBitmapRef.current !== bitmap) {
-                  try { latestBitmapRef.current.close(); } catch (e) {}
-                }
-                latestBitmapRef.current = bitmap;
-                latestFrameMetaRef.current = { 
-                  timestamp: payload.timestamp ?? timestamp, 
-                  bytes: payload.bytes ?? bytes, 
-                  cursors: payload.cursors ?? cursors 
-                };
-                setFrameMetadata({
-                  width: payload.width || bitmap.width,
-                  height: payload.height || bitmap.height,
-                  cursors: payload.cursors ?? cursors,
-                });
-              }
-            }
-          };
-        }
-
-        // Post base64 to worker for decode
-        // We include bytes/timestamp in the message so worker can include metadata
-        workerRef.current.postMessage({ type: 'frame', data, mime, timestamp, bytes, cursors });
-        // DO NOT update React state for every frame. Rendering handled by canvas.
+        const frame = payload as FrameMessagePayload;
+        if (typeof frame.data !== 'string') break;
+        postFramePayload(frame);
         break;
       }
 
       case 'chat_message':
+        {
+          const sender: ChatSender =
+            payload.sender === 'agent' || payload.sender === 'system' ? payload.sender : 'viewer';
         setState((prev) => ({
           ...prev,
           chat: [
             ...prev.chat,
             {
               id: makeId(),
-              sender: message.payload.sender,
-              nickname: message.payload.nickname ?? message.payload.sender,
-              message: message.payload.message,
-              timestamp: message.payload.timestamp ?? Date.now(),
+              sender,
+              nickname: String(payload.nickname ?? payload.sender ?? 'Viewer'),
+              message: String(payload.message ?? ''),
+              timestamp: typeof payload.timestamp === 'number' ? payload.timestamp : Date.now(),
             },
           ].slice(-100),
         }));
         break;
+        }
 
       case 'file_offer': {
-        const { fileId, name, mime, size, direction, sender } = message.payload;
+        const { fileId, name, mime, size, direction, sender } = payload;
         if (direction === 'agent_to_viewer' || sender === 'agent') {
-          fileBufferRef.current[fileId] = { name, mime, size, direction: 'inbound', received: 0, chunks: [] };
-          updateTransfers({ id: fileId, name, mime, size, direction: 'inbound', status: 'pending', progress: 0 });
-          addActivity({ label: 'Incoming file', detail: name, tone: 'info' });
+          const id = String(fileId);
+          const fileName = String(name ?? 'download');
+          const fileSize = typeof size === 'number' ? size : 0;
+          const fileMime = typeof mime === 'string' ? mime : undefined;
+          fileBufferRef.current[id] = { name: fileName, mime: fileMime, size: fileSize, direction: 'inbound', received: 0, chunks: [] };
+          updateTransfers({ id, name: fileName, mime: fileMime, size: fileSize, direction: 'inbound', status: 'pending', progress: 0 });
+          addActivity({ label: 'Incoming file', detail: fileName, tone: 'info' });
         }
         break;
       }
 
       case 'file_chunk': {
-        const { fileId, data, index, total, sender } = message.payload;
+        const { fileId, data, index, total, sender } = payload;
         if (sender === 'agent') {
-          const buffer = fileBufferRef.current[fileId];
+          const id = String(fileId);
+          const buffer = fileBufferRef.current[id];
           if (!buffer) break;
+          if (typeof index !== 'number' || typeof data !== 'string') break;
           buffer.chunks[index] = data;
           buffer.received += 1;
-          buffer.totalChunks = total;
+          buffer.totalChunks = typeof total === 'number' ? total : undefined;
           const progress = buffer.totalChunks ? buffer.received / buffer.totalChunks : 0;
-          updateTransfers({ id: fileId, name: buffer.name, mime: buffer.mime, size: buffer.size, direction: 'inbound', status: progress >= 1 ? 'completed' : 'in_progress', progress });
-          if (message.payload.done || progress >= 1) {
+          updateTransfers({ id, name: buffer.name, mime: buffer.mime, size: buffer.size, direction: 'inbound', status: progress >= 1 ? 'completed' : 'in_progress', progress });
+          if (payload.done || progress >= 1) {
             saveInboundFile(buffer);
             addActivity({ label: 'File saved', detail: buffer.name, tone: 'success' });
-            delete fileBufferRef.current[fileId];
+            delete fileBufferRef.current[id];
           }
         }
         break;
@@ -430,40 +542,50 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
       default:
         break;
     }
-  }, [addActivity, cleanupSocket, createDecoderWorker, sendMessage, updateTransfers]);
+  }, [addActivity, cleanupSocket, sendMessage, updateTransfers]);
 
-  // connect/disconnect/send functions
   const connect = useCallback((code: string, nickname: string) => {
     cleanupSocket();
-    const socket = new WebSocket(`${WS_URL}?role=viewer&ts=${Date.now()}`);
-    wsRef.current = socket;
     setState((prev) => ({ ...prev, status: 'connecting', code, nickname, error: undefined }));
     addActivity({ label: `Connecting to ${code}`, tone: 'info' });
 
-    socket.onopen = () => {
-      sendMessage('viewer_join', { code, nickname });
-    };
+    const peer = new Peer({ debug: 1 });
+    peerRef.current = peer;
 
-    socket.onmessage = (ev) => {
-      try {
-        const message = JSON.parse(ev.data);
-        handleMessage(message);
-      } catch (err) {
-        console.error('Invalid WS payload', err);
-      }
-    };
+    peer.on('open', () => {
+      const connection = peer.connect(`${PEER_PREFIX}${code.toLowerCase()}`, {
+        reliable: true,
+        serialization: 'binary',
+        metadata: { nickname, channel: 'session' },
+      });
+      connectionRef.current = connection;
+      controlConnectionRef.current = peer.connect(`${PEER_PREFIX}${code.toLowerCase()}`, {
+        reliable: true,
+        serialization: 'binary',
+        metadata: { nickname, channel: 'control' },
+      });
+      connection.on('open', () => {
+        connection.send({ type: 'viewer_join', payload: { code, nickname } });
+      });
+      connection.on('data', (raw) => handleMessage(raw as ServerMessage));
+      connection.on('close', () => {
+        setState((prev) => ({ ...prev, status: 'error', error: 'Host disconnected' }));
+      });
+      connection.on('error', (error) => {
+        setState((prev) => ({ ...prev, status: 'error', error: error.message }));
+      });
+    });
 
-    socket.onclose = (event) => {
-      if (event.code !== 1000) {
-        setState((prev) => ({ ...prev, status: 'error', error: event.reason || 'Connection closed' }));
-        addActivity({ label: 'Connection closed', detail: event.reason || `${event.code}`, tone: 'danger' });
-      } else {
-        setState((prev) => ({ ...prev, status: 'idle' }));
-      }
-    };
+    peer.on('error', (error) => {
+      const message =
+        error.type === 'peer-unavailable'
+          ? 'Session code not found. Confirm the host is still sharing.'
+          : error.message;
+      setState((prev) => ({ ...prev, status: 'error', error: message }));
+      addActivity({ label: 'Connection failed', detail: message, tone: 'danger' });
+    });
   }, [addActivity, cleanupSocket, handleMessage, sendMessage]);
 
-  // Send input/chat/file helpers (unchanged behavior)
   const sendInput = useCallback((payload: Record<string, unknown>) => {
     sendMessage('input_event', payload);
   }, [sendMessage]);
@@ -489,10 +611,8 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
     addActivity({ label: 'File sent', detail: file.name, tone: 'success' });
   }, [sendMessage, updateTransfers, addActivity]);
 
-  // cleanup on unmount
   useEffect(() => () => cleanupSocket(), [cleanupSocket]);
 
-  // Start the render loop (only once) - we use an effect to start RAF
   useEffect(() => {
     if (!rafRef.current) rafRef.current = requestAnimationFrame(renderLoop);
     return () => {
@@ -503,7 +623,7 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
 
   const resetError = useCallback(() => setState((prev) => ({ ...prev, error: undefined, status: 'idle' })), []);
 
-  const api: any = useMemo(() => ({
+  const api = useMemo<RemoteSessionApi>(() => ({
     ...state,
     connect,
     disconnect,
@@ -512,20 +632,17 @@ export const useRemoteSession = (): RemoteSessionApi & { canvasRef: React.RefObj
     sendFile,
     resetError,
     canvasRef,
-    frameMetadata, // Expose frame metadata (width, height, cursors)
+    frameMetadata, // throttled
   }), [connect, disconnect, sendChat, sendFile, sendInput, resetError, state, frameMetadata]);
 
   return api;
 };
 
-/* helper that saves a base64-chunked inbound file (same as yours) */
 const saveInboundFile = (buffer: InboundFileBuffer) => {
   const merged = buffer.chunks.join('');
   const byteCharacters = atob(merged);
   const byteNumbers = new Array(byteCharacters.length);
-  for (let i = 0; i < byteCharacters.length; i += 1) {
-    byteNumbers[i] = byteCharacters.charCodeAt(i);
-  }
+  for (let i = 0; i < byteCharacters.length; i += 1) byteNumbers[i] = byteCharacters.charCodeAt(i);
   const byteArray = new Uint8Array(byteNumbers);
   const blob = new Blob([byteArray], { type: buffer.mime ?? 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
@@ -535,3 +652,4 @@ const saveInboundFile = (buffer: InboundFileBuffer) => {
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 };
+

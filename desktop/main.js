@@ -1,10 +1,21 @@
 const path = require('node:path');
-const { app, BrowserWindow, shell, ipcMain, session } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  shell,
+  ipcMain,
+  session,
+  screen,
+  desktopCapturer,
+} = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { HostController } = require('./host/controller');
+const { startLocalRelay } = require('./relay');
 
 const isDev = Boolean(process.env.ELECTRON_START_URL);
 let mainWindow;
+let localRelay;
+let selectedCaptureSourceId;
 const hostController = new HostController();
 
 const createWindow = () => {
@@ -79,6 +90,23 @@ ipcMain.handle('host:stop', async () => {
 });
 
 ipcMain.handle('host:getState', () => hostController.getState());
+ipcMain.handle('host:applyInput', (_event, payload) => hostController.applyInput(payload));
+ipcMain.handle('host:listCaptureSources', async () => {
+  const sources = await desktopCapturer.getSources({
+    types: ['screen', 'window'],
+    thumbnailSize: { width: 320, height: 180 },
+    fetchWindowIcons: true,
+  });
+  return sources.map((source) => ({
+    id: source.id,
+    name: source.name,
+    displayId: source.display_id,
+    thumbnail: source.thumbnail.toDataURL(),
+  }));
+});
+ipcMain.handle('host:setCaptureSource', (_event, sourceId) => {
+  selectedCaptureSourceId = String(sourceId || '');
+});
 
 // Configure auto-updater
 autoUpdater.autoDownload = true;
@@ -180,7 +208,7 @@ app.whenReady().then(() => {
   // Must be done after app is ready
   const csp = isDev
     ? "default-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:* ws://localhost:* wss://* https://* data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:* blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' http://localhost:* https://*; style-src-elem 'self' 'unsafe-inline' http://localhost:* https://*;"
-    : "default-src 'self' 'unsafe-inline' ws://* wss://* https://* data: blob:; script-src 'self' 'unsafe-inline' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://*; style-src-elem 'self' 'unsafe-inline' https://*;";
+    : "default-src 'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* ws://* wss://* https://* data: blob:; script-src 'self' 'unsafe-inline' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://*; style-src-elem 'self' 'unsafe-inline' https://*;";
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
@@ -189,6 +217,28 @@ app.whenReady().then(() => {
         'Content-Security-Policy': [csp],
       },
     });
+  });
+
+  session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen', 'window'],
+        thumbnailSize: { width: 0, height: 0 },
+      });
+      const primaryDisplayId = screen.getPrimaryDisplay().id.toString();
+      const source =
+        sources.find((candidate) => candidate.id === selectedCaptureSourceId) ??
+        sources.find((candidate) => candidate.display_id === primaryDisplayId) ??
+        sources[0];
+      callback(source ? { video: source } : {});
+    } catch (error) {
+      console.error('[capture] Could not select desktop source', error);
+      callback({});
+    }
+  });
+
+  localRelay = startLocalRelay({
+    log: (message) => console.log(`[relay] ${message}`),
   });
 
   createWindow();
@@ -201,6 +251,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     hostController.stop();
+    localRelay?.close();
     app.quit();
   }
 });

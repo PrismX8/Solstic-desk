@@ -38,6 +38,33 @@ const KEY_MAP = new Map([
   ['home', 0x24],
   ['end', 0x23],
   ['insert', 0x2d],
+  ['f1', 0x70],
+  ['f2', 0x71],
+  ['f3', 0x72],
+  ['f4', 0x73],
+  ['f5', 0x74],
+  ['f6', 0x75],
+  ['f7', 0x76],
+  ['f8', 0x77],
+  ['f9', 0x78],
+  ['f10', 0x79],
+  ['f11', 0x7a],
+  ['f12', 0x7b],
+]);
+
+const CODE_MAP = new Map([
+  ['Space', 0x20],
+  ['Semicolon', 0xba],
+  ['Equal', 0xbb],
+  ['Comma', 0xbc],
+  ['Minus', 0xbd],
+  ['Period', 0xbe],
+  ['Slash', 0xbf],
+  ['Backquote', 0xc0],
+  ['BracketLeft', 0xdb],
+  ['Backslash', 0xdc],
+  ['BracketRight', 0xdd],
+  ['Quote', 0xde],
 ]);
 
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
@@ -49,17 +76,24 @@ for (const digit of DIGITS) {
   KEY_MAP.set(digit, digit.charCodeAt(0));
 }
 
-function toVk(key) {
+function toVk(key, code) {
   if (!key) return undefined;
+  if (code?.startsWith('Key') && code.length === 4) return code.charCodeAt(3);
+  if (code?.startsWith('Digit') && code.length === 6) return code.charCodeAt(5);
+  if (CODE_MAP.has(code)) return CODE_MAP.get(code);
   const normalized = key.length === 1 ? key.toLowerCase() : key.toLowerCase();
   return KEY_MAP.get(normalized);
 }
 
-function handleMouse(event, screenSize) {
+function handleMouse(event, bounds) {
   switch (event.kind) {
     case 'mouse_move': {
-      const x = Math.round(event.x * screenSize.width);
-      const y = Math.round(event.y * screenSize.height);
+      const width = bounds.width || bounds.size?.width || 1;
+      const height = bounds.height || bounds.size?.height || 1;
+      const originX = bounds.x || 0;
+      const originY = bounds.y || 0;
+      const x = originX + Math.round(event.x * Math.max(0, width - 1));
+      const y = originY + Math.round(event.y * Math.max(0, height - 1));
       native.setCursorPos(x, y);
       break;
     }
@@ -103,27 +137,19 @@ function handleKeyboard(event) {
     }
     return;
   }
-  const vk = toVk(event.key);
+  const vk = toVk(event.key, event.code);
   if (!vk) return;
 
-  const modifiers = [];
-  if (event.meta?.ctrl || event.meta?.control) modifiers.push(KEY_MAP.get('control'));
-  if (event.meta?.alt) modifiers.push(KEY_MAP.get('alt'));
-  if (event.meta?.shift) modifiers.push(KEY_MAP.get('shift'));
-  if (event.meta?.meta) modifiers.push(KEY_MAP.get('meta'));
-
   if (event.kind === 'key_down') {
-    modifiers.forEach((code) => code && sendKey(code, 'down'));
     sendKey(vk, 'down');
   } else if (event.kind === 'key_up') {
     sendKey(vk, 'up');
-    modifiers.reverse().forEach((code) => code && sendKey(code, 'up'));
   }
 }
 
-function applyInputEvent(event, screenSize) {
+function applyInputEvent(event, bounds) {
   if (event.kind.startsWith('mouse')) {
-    handleMouse(event, screenSize);
+    handleMouse(event, bounds);
   } else {
     handleKeyboard(event);
   }

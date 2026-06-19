@@ -1,9 +1,7 @@
 import { useMemo, useState } from 'react';
 import clsx from 'clsx';
-import { ShieldCheck, WifiOff, Zap } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import { PlugZap, ShieldCheck, WifiOff, Zap } from 'lucide-react';
 import type { RemoteSessionApi } from '../types/remote';
-import { fetchSessionMeta } from '../services/api';
 
 interface Props {
   session: RemoteSessionApi;
@@ -22,15 +20,6 @@ const statusCopy: Record<
 export const ConnectionPanel = ({ session }: Props) => {
   const [code, setCode] = useState('');
   const [nickname, setNickname] = useState('Command');
-  const normalizedCode = code.trim().toUpperCase();
-
-  const { data: preview, isFetching: previewLoading, error: previewError } =
-    useQuery({
-      queryKey: ['session-meta', normalizedCode],
-      queryFn: () => fetchSessionMeta(normalizedCode),
-      enabled: normalizedCode.length >= 4 && session.status === 'idle',
-      staleTime: 10_000,
-    });
 
   const status = statusCopy[session.status];
 
@@ -60,17 +49,25 @@ export const ConnectionPanel = ({ session }: Props) => {
 
   return (
     <section className="glass-panel relative overflow-hidden">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(94,240,255,0.15),transparent_55%)]" />
-      <div className="relative z-10 grid gap-6 p-6 lg:grid-cols-[1.2fr_0.8fr]">
+      <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-indigo-300 via-sky-300 to-emerald-300" />
+      <div className="relative z-10 grid gap-6 p-6 lg:grid-cols-[1.15fr_0.85fr]">
         <form onSubmit={handleConnect} className="space-y-4">
-          <p className="text-xs uppercase tracking-[0.4em] text-white/50">
-            Session Control
-          </p>
+          <div>
+            <p className="text-xs uppercase tracking-[0.4em] text-white/50">
+              Join Station
+            </p>
+            <h2 className="mt-1 text-2xl font-semibold text-white">
+              Connect to a code
+            </h2>
+            <p className="text-sm text-white/70">
+              Enter the host code to open the live remote surface.
+            </p>
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="flex flex-col gap-2 text-sm text-white/70">
               Session Code
               <input
-                className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ring-aurora/40 focus:ring"
+                className="rounded-lg border border-white/10 bg-black/20 px-4 py-3 text-white outline-none ring-aurora/40 transition placeholder:text-white/30 focus:border-aurora/40 focus:ring"
                 placeholder="ABC123"
                 value={code}
                 onChange={(e) => setCode(e.target.value.toUpperCase())}
@@ -82,7 +79,7 @@ export const ConnectionPanel = ({ session }: Props) => {
             <label className="flex flex-col gap-2 text-sm text-white/70">
               Your Call Sign
               <input
-                className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ring-aurora/40 focus:ring"
+                className="rounded-lg border border-white/10 bg-black/20 px-4 py-3 text-white outline-none ring-aurora/40 transition placeholder:text-white/30 focus:border-aurora/40 focus:ring"
                 value={nickname}
                 onChange={(e) => setNickname(e.target.value)}
                 maxLength={24}
@@ -90,35 +87,16 @@ export const ConnectionPanel = ({ session }: Props) => {
             </label>
           </div>
 
-          {(session.error || previewError) && (
+          {session.error && (
             <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
-              {session.error ??
-                'Session not found or unavailable. Double-check the code.'}
-            </div>
-          )}
-
-          {preview && (
-            <div className="rounded-2xl border border-aurora/30 bg-aurora/5 px-4 py-3 text-sm text-white/80">
-              {previewLoading ? (
-                <span>Validating…</span>
-              ) : (
-                <>
-                  <p className="font-semibold text-white">
-                    {preview.deviceName}
-                  </p>
-                  <p className="text-xs uppercase tracking-[0.4em] text-white/50">
-                    {preview.os} · expires{' '}
-                    {new Date(preview.expiresAt).toLocaleTimeString()}
-                  </p>
-                </>
-              )}
+              {session.error}
             </div>
           )}
 
           <div className="flex gap-3">
             <button
               type="submit"
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-aurora px-4 py-3 font-semibold text-[#041016] shadow-glow transition hover:bg-aurora/90"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-white px-4 py-3 font-semibold text-[#071016] shadow-[0_16px_40px_rgba(94,240,255,0.2)] transition hover:bg-aurora"
               disabled={session.status === 'connecting'}
             >
               <Zap className="h-4 w-4" />
@@ -127,7 +105,7 @@ export const ConnectionPanel = ({ session }: Props) => {
             <button
               type="button"
               onClick={session.disconnect}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/15 px-4 py-3 text-sm text-white/70 transition hover:border-white/40 hover:text-white"
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 px-4 py-3 text-sm text-white/70 transition hover:border-white/40 hover:bg-white/5 hover:text-white"
             >
               <WifiOff className="h-4 w-4" />
               Drop
@@ -135,7 +113,7 @@ export const ConnectionPanel = ({ session }: Props) => {
           </div>
         </form>
 
-        <div className="space-y-4 rounded-2xl border border-white/10 bg-white/3 p-5 backdrop-blur-lg">
+        <div className="space-y-4 rounded-xl border border-white/10 bg-black/20 p-5">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.3em] text-white/50">
@@ -145,13 +123,17 @@ export const ConnectionPanel = ({ session }: Props) => {
                 {status.label}
               </p>
             </div>
-            <ShieldCheck className="h-10 w-10 text-white/30" />
+            {session.status === 'connected' ? (
+              <ShieldCheck className="h-10 w-10 text-emerald-300" />
+            ) : (
+              <PlugZap className="h-10 w-10 text-white/30" />
+            )}
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             {metrics.map((metric) => (
               <div
                 key={metric.label}
-                className="rounded-xl border border-white/5 bg-white/2 px-4 py-3"
+                className="rounded-lg border border-white/5 bg-white/[0.03] px-4 py-3"
               >
                 <p className="text-xs uppercase tracking-widest text-white/40">
                   {metric.label}

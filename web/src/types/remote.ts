@@ -1,3 +1,5 @@
+import type { RefObject } from 'react';
+
 export type RemoteStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
 export type ChatSender = 'agent' | 'viewer' | 'system';
@@ -6,6 +8,12 @@ export interface RemoteCursor {
   viewerId: string;
   x: number;
   y: number;
+}
+
+export interface RemoteFrameMetadata {
+  width?: number;
+  height?: number;
+  cursors?: RemoteCursor[];
 }
 
 export interface RemoteFrame {
@@ -67,5 +75,7 @@ export interface RemoteSessionApi extends RemoteSessionState {
   sendChat: (message: string) => void;
   sendFile: (file: File) => Promise<void>;
   resetError: () => void;
+  canvasRef: RefObject<HTMLCanvasElement | null>;
+  frameMetadata: RemoteFrameMetadata | null;
 }
 

@@ -1,7 +1,7 @@
 import ky from 'ky';
 
 const API_BASE =
-  import.meta.env.VITE_API_BASE?.replace(/\/$/, '') ?? 'https://railways.up.railway.app';
+  import.meta.env.VITE_API_BASE?.replace(/\/$/, '') ?? 'http://127.0.0.1:17654';
 
 const client = ky.create({
   prefixUrl: API_BASE,

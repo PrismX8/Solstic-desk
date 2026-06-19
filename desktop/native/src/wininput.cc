@@ -23,8 +23,14 @@ Napi::Value MouseEventWrapped(const Napi::CallbackInfo& info) {
   int dx = info[1].As<Napi::Number>().Int32Value();
   int dy = info[2].As<Napi::Number>().Int32Value();
   DWORD data = info[3].As<Napi::Number>().Uint32Value();
-  mouse_event(flag, dx, dy, data, 0);
-  return env.Undefined();
+  INPUT input = {};
+  input.type = INPUT_MOUSE;
+  input.mi.dx = dx;
+  input.mi.dy = dy;
+  input.mi.mouseData = data;
+  input.mi.dwFlags = flag;
+  UINT sent = SendInput(1, &input, sizeof(INPUT));
+  return Napi::Boolean::New(env, sent == 1);
 }
 
 Napi::Value KeybdEventWrapped(const Napi::CallbackInfo& info) {
@@ -35,8 +41,12 @@ Napi::Value KeybdEventWrapped(const Napi::CallbackInfo& info) {
   }
   BYTE vk = static_cast<BYTE>(info[0].As<Napi::Number>().Uint32Value());
   DWORD flags = info[1].As<Napi::Number>().Uint32Value();
-  keybd_event(vk, 0, flags, 0);
-  return env.Undefined();
+  INPUT input = {};
+  input.type = INPUT_KEYBOARD;
+  input.ki.wVk = vk;
+  input.ki.dwFlags = flags;
+  UINT sent = SendInput(1, &input, sizeof(INPUT));
+  return Napi::Boolean::New(env, sent == 1);
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {

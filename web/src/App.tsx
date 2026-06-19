@@ -9,22 +9,16 @@ import { useRemoteSession } from './hooks/useRemoteSession';
 
 const App = () => {
   const session = useRemoteSession();
-  const hostAvailable =
-    typeof window !== 'undefined' && Boolean(window.solsticeDesktop?.host);
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen overflow-x-hidden">
       <Header />
-      <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 pb-16">
-        <div
-          className={`grid gap-6 ${
-            hostAvailable ? 'lg:grid-cols-2' : 'grid-cols-1'
-          }`}
-        >
-          {hostAvailable && <HostPanel />}
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 pb-12 sm:px-6">
+        <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+          <HostPanel />
           <ConnectionPanel session={session} />
         </div>
-        <div className="grid gap-6 lg:grid-cols-[1.6fr_0.7fr]">
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.75fr)]">
           <RemoteSurface session={session} />
           <div className="space-y-6">
             <ChatPanel session={session} />
