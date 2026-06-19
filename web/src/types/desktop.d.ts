@@ -45,6 +45,7 @@ export interface UpdateApi {
 declare global {
   interface Window {
     solsticeDesktop?: {
+      appVersion: string;
       platform: NodeJS.Platform;
       versions: Record<string, string>;
       host?: HostApi;

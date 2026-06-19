@@ -35,6 +35,7 @@ const updateApi = {
 };
 
 contextBridge.exposeInMainWorld('solsticeDesktop', {
+  appVersion: require('./package.json').version,
   platform: process.platform,
   versions: {
     electron: process.versions.electron,

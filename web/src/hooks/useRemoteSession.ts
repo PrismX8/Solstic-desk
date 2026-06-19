@@ -163,6 +163,11 @@ export const useRemoteSession = (): RemoteSessionApi => {
   const peerRef = useRef<Peer | null>(null);
   const connectionRef = useRef<DataConnection | null>(null);
   const controlConnectionRef = useRef<DataConnection | null>(null);
+  const mediaPeerRef = useRef<RTCPeerConnection | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const mediaActiveRef = useRef(false);
+  const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
+  const mediaStatsTimerRef = useRef<number | undefined>(undefined);
   const heartbeatRef = useRef<number | undefined>(undefined);
   const fileBufferRef = useRef<Record<string, InboundFileBuffer>>({});
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -179,6 +184,7 @@ export const useRemoteSession = (): RemoteSessionApi => {
   const lastVideoTimeRef = useRef(-1);
 
   const [frameMetadata, setFrameMetadata] = useState<RemoteFrameMetadata | null>(null);
+  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
 
   // fps sampling
   const frameCounterRef = useRef(0);
@@ -316,6 +322,15 @@ export const useRemoteSession = (): RemoteSessionApi => {
     connectionRef.current = null;
     controlConnectionRef.current?.close();
     controlConnectionRef.current = null;
+    mediaPeerRef.current?.close();
+    mediaPeerRef.current = null;
+    remoteStreamRef.current?.getTracks().forEach((track) => track.stop());
+    remoteStreamRef.current = null;
+    mediaActiveRef.current = false;
+    pendingIceRef.current = [];
+    if (mediaStatsTimerRef.current) window.clearInterval(mediaStatsTimerRef.current);
+    mediaStatsTimerRef.current = undefined;
+    setMediaStream(null);
     peerRef.current?.destroy();
     peerRef.current = null;
 
@@ -449,6 +464,80 @@ export const useRemoteSession = (): RemoteSessionApi => {
     };
   }, [ensureWorker, renderLoop]);
 
+  const acceptRtcOffer = useCallback(async (sdp: string) => {
+    mediaPeerRef.current?.close();
+    const mediaPeer = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    });
+    mediaPeerRef.current = mediaPeer;
+    mediaPeer.onicecandidate = (event) => {
+      if (event.candidate) {
+        sendMessage('rtc_ice', { candidate: event.candidate.toJSON() });
+      }
+    };
+    mediaPeer.ontrack = async (event) => {
+      const stream = event.streams[0] ?? new MediaStream([event.track]);
+      remoteStreamRef.current = stream;
+      mediaActiveRef.current = true;
+      setMediaStream(stream);
+      workerRef.current?.terminate();
+      workerRef.current = null;
+      decoderBusyRef.current = false;
+      pendingFrameRef.current = null;
+      closeBitmapIfAny(latestFrameRef.current);
+      latestFrameRef.current = null;
+      sendMessage('media_ready', {});
+
+      let previousFrames = 0;
+      let previousTime = performance.now();
+      if (mediaStatsTimerRef.current) window.clearInterval(mediaStatsTimerRef.current);
+      mediaStatsTimerRef.current = window.setInterval(async () => {
+        const reports = await mediaPeer.getStats();
+        const inbound = [...reports.values()].find(
+          (report) => report.type === 'inbound-rtp' && report.kind === 'video',
+        );
+        if (!inbound) return;
+        const currentTime = performance.now();
+        const frames = Number(inbound.framesDecoded ?? previousFrames);
+        const measuredFps = Math.round(
+          Number(inbound.framesPerSecond) ||
+            ((frames - previousFrames) * 1000) / Math.max(1, currentTime - previousTime),
+        );
+        previousFrames = frames;
+        previousTime = currentTime;
+        const width = Number(inbound.frameWidth || event.track.getSettings().width || 0);
+        const height = Number(inbound.frameHeight || event.track.getSettings().height || 0);
+        setState((previous) =>
+          previous.fps === measuredFps ? previous : { ...previous, fps: measuredFps },
+        );
+        if (width && height) setFrameMetadata({ width, height, cursors: [] });
+      }, 1000);
+    };
+    mediaPeer.onconnectionstatechange = () => {
+      if (mediaPeer.connectionState === 'failed' || mediaPeer.connectionState === 'closed') {
+        mediaActiveRef.current = false;
+        setMediaStream(null);
+        sendMessage('media_unavailable', {});
+      }
+    };
+    await mediaPeer.setRemoteDescription({ type: 'offer', sdp });
+    const queued = pendingIceRef.current;
+    pendingIceRef.current = [];
+    for (const candidate of queued) await mediaPeer.addIceCandidate(candidate);
+    const answer = await mediaPeer.createAnswer();
+    await mediaPeer.setLocalDescription(answer);
+    sendMessage('rtc_answer', { sdp: answer.sdp ?? '' });
+  }, [sendMessage]);
+
+  const addRtcIceCandidate = useCallback((candidate: RTCIceCandidateInit) => {
+    const mediaPeer = mediaPeerRef.current;
+    if (mediaPeer?.remoteDescription) {
+      void mediaPeer.addIceCandidate(candidate);
+    } else {
+      pendingIceRef.current.push(candidate);
+    }
+  }, []);
+
   const handleMessage = useCallback((message: ServerMessage) => {
     const payload = message.payload ?? {};
     switch (message.type) {
@@ -478,11 +567,20 @@ export const useRemoteSession = (): RemoteSessionApi => {
         break;
 
       case 'frame': {
+        if (mediaActiveRef.current) break;
         const frame = payload as FrameMessagePayload;
         if (typeof frame.data !== 'string') break;
         postFramePayload(frame);
         break;
       }
+
+      case 'rtc_offer':
+        if (payload.sdp) void acceptRtcOffer(String(payload.sdp));
+        break;
+
+      case 'rtc_ice':
+        if (payload.candidate) addRtcIceCandidate(payload.candidate as RTCIceCandidateInit);
+        break;
 
       case 'chat_message':
         {
@@ -542,7 +640,7 @@ export const useRemoteSession = (): RemoteSessionApi => {
       default:
         break;
     }
-  }, [addActivity, cleanupSocket, sendMessage, updateTransfers]);
+  }, [acceptRtcOffer, addActivity, addRtcIceCandidate, cleanupSocket, sendMessage, updateTransfers]);
 
   const connect = useCallback((code: string, nickname: string) => {
     cleanupSocket();
@@ -632,8 +730,9 @@ export const useRemoteSession = (): RemoteSessionApi => {
     sendFile,
     resetError,
     canvasRef,
+    mediaStream,
     frameMetadata, // throttled
-  }), [connect, disconnect, sendChat, sendFile, sendInput, resetError, state, frameMetadata]);
+  }), [connect, disconnect, sendChat, sendFile, sendInput, resetError, state, mediaStream, frameMetadata]);
 
   return api;
 };

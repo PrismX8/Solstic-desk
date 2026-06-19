@@ -31,13 +31,16 @@ export const useHostSession = () => {
   const frameTimerRef = useRef<number | undefined>(undefined);
   const captureBusyRef = useRef(false);
   const connectionsRef = useRef(new Map<string, DataConnection>());
+  const mediaPeersRef = useRef(new Map<string, RTCPeerConnection>());
+  const pendingIceRef = useRef(new Map<string, RTCIceCandidateInit[]>());
+  const mediaReadyPeersRef = useRef(new Set<string>());
 
   const captureFrame = useCallback(() => {
     const started = performance.now();
     const scheduleNext = () => {
       frameTimerRef.current = window.setTimeout(
         captureFrame,
-        Math.max(0, 66 - (performance.now() - started)),
+        Math.max(0, 100 - (performance.now() - started)),
       );
     };
 
@@ -54,7 +57,7 @@ export const useHostSession = () => {
 
     captureBusyRef.current = true;
     try {
-      const scale = Math.min(1, 1280 / video.videoWidth);
+      const scale = Math.min(1, 1920 / video.videoWidth);
       const width = Math.max(1, Math.round(video.videoWidth * scale));
       const height = Math.max(1, Math.round(video.videoHeight * scale));
       const canvas = canvasRef.current ?? document.createElement('canvas');
@@ -64,7 +67,7 @@ export const useHostSession = () => {
       const context = canvas.getContext('2d', { alpha: false });
       if (!context) return;
       context.drawImage(video, 0, 0, width, height);
-      const data = canvas.toDataURL('image/jpeg', 0.62).split(',')[1];
+      const data = canvas.toDataURL('image/jpeg', 0.82).split(',')[1];
       if (!data) return;
       const message = {
         type: 'frame',
@@ -78,7 +81,11 @@ export const useHostSession = () => {
         },
       };
       connectionsRef.current.forEach((connection) => {
-        if (connection.open && connection.dataChannel.bufferedAmount < 512 * 1024) {
+        if (
+          !mediaReadyPeersRef.current.has(connection.peer) &&
+          connection.open &&
+          connection.dataChannel.bufferedAmount < 512 * 1024
+        ) {
           connection.send(message);
         }
       });
@@ -91,6 +98,10 @@ export const useHostSession = () => {
   const stop = useCallback(async () => {
     connectionsRef.current.forEach((connection) => connection.close());
     connectionsRef.current.clear();
+    mediaPeersRef.current.forEach((connection) => connection.close());
+    mediaPeersRef.current.clear();
+    pendingIceRef.current.clear();
+    mediaReadyPeersRef.current.clear();
     peerRef.current?.destroy();
     peerRef.current = null;
     if (frameTimerRef.current) window.clearTimeout(frameTimerRef.current);
@@ -124,12 +135,19 @@ export const useHostSession = () => {
         }
         const stream = await navigator.mediaDevices.getDisplayMedia({
           video: {
-            frameRate: { ideal: 30, max: 30 },
-            width: { ideal: 1920, max: 1920 },
+            frameRate: { ideal: 60, max: 60 },
+            width: { ideal: 3840, max: 3840 },
+            height: { ideal: 2160, max: 2160 },
           },
           audio: false,
         });
         streamRef.current = stream;
+        const videoTrack = stream.getVideoTracks()[0];
+        if (!videoTrack) throw new Error('The selected source did not provide a video track.');
+        videoTrack.contentHint = 'detail';
+        await videoTrack
+          .applyConstraints({ frameRate: { ideal: 60, max: 60 } })
+          .catch(() => undefined);
 
         const video = document.createElement('video');
         video.muted = true;
@@ -178,6 +196,38 @@ export const useHostSession = () => {
                 viewers: connectionsRef.current.size,
               },
             });
+
+            const mediaPeer = new RTCPeerConnection({
+              iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+            });
+            mediaPeersRef.current.set(connectionKey, mediaPeer);
+            pendingIceRef.current.set(connectionKey, []);
+            mediaPeer.onicecandidate = (event) => {
+              if (event.candidate && connection.open) {
+                connection.send({
+                  type: 'rtc_ice',
+                  payload: { candidate: event.candidate.toJSON() },
+                });
+              }
+            };
+            const videoSender = mediaPeer.addTrack(videoTrack, stream);
+            const configureSender = () => {
+              const parameters = videoSender.getParameters();
+              parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
+              parameters.encodings[0].maxBitrate = 35_000_000;
+              parameters.encodings[0].maxFramerate = 60;
+              parameters.encodings[0].scaleResolutionDownBy = 1;
+              void videoSender.setParameters(parameters).catch(() => undefined);
+            };
+            configureSender();
+            void mediaPeer
+              .createOffer()
+              .then((offer) => mediaPeer.setLocalDescription(offer).then(() => offer))
+              .then((offer) => {
+                if (connection.open) {
+                  connection.send({ type: 'rtc_offer', payload: { sdp: offer.sdp } });
+                }
+              });
           });
 
           connection.on('data', (raw) => {
@@ -185,11 +235,42 @@ export const useHostSession = () => {
             if (message?.type === 'input_event' && message.payload && hostApi?.applyInput) {
               void hostApi.applyInput(message.payload);
             }
+            if (message?.type === 'media_ready') {
+              mediaReadyPeersRef.current.add(connection.peer);
+            }
+            if (message?.type === 'media_unavailable') {
+              mediaReadyPeersRef.current.delete(connection.peer);
+            }
+            const mediaPeer = mediaPeersRef.current.get(connectionKey);
+            if (message?.type === 'rtc_answer' && mediaPeer && message.payload?.sdp) {
+              void mediaPeer
+                .setRemoteDescription({
+                  type: 'answer',
+                  sdp: String(message.payload.sdp),
+                })
+                .then(async () => {
+                  const queued = pendingIceRef.current.get(connectionKey) ?? [];
+                  pendingIceRef.current.set(connectionKey, []);
+                  for (const candidate of queued) await mediaPeer.addIceCandidate(candidate);
+                });
+            }
+            if (message?.type === 'rtc_ice' && mediaPeer && message.payload?.candidate) {
+              const candidate = message.payload.candidate as RTCIceCandidateInit;
+              if (mediaPeer.remoteDescription) {
+                void mediaPeer.addIceCandidate(candidate);
+              } else {
+                pendingIceRef.current.get(connectionKey)?.push(candidate);
+              }
+            }
           });
 
           const removeViewer = () => {
             if (isControlChannel) return;
             connectionsRef.current.delete(connectionKey);
+            mediaReadyPeersRef.current.delete(connection.peer);
+            mediaPeersRef.current.get(connectionKey)?.close();
+            mediaPeersRef.current.delete(connectionKey);
+            pendingIceRef.current.delete(connectionKey);
             setState((previous) => ({
               ...previous,
               viewers: connectionsRef.current.size,

@@ -78,6 +78,7 @@ const resolveDisplayRect = (
 export const RemoteSurface = ({ session }: Props) => {
   const sectionRef = useRef<HTMLElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const lastMouseMoveTime = useRef(0);
   const pressedButtonsRef = useRef(new Set<'left' | 'middle' | 'right'>());
@@ -95,10 +96,14 @@ export const RemoteSurface = ({ session }: Props) => {
   const [panelSize, setPanelSize] = useState({ width: 0, height: 0 });
   const [isResizing, setIsResizing] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [videoSize, setVideoSize] = useState<{ width: number; height: number } | null>(null);
 
-  const hasFrame = Boolean(session.frameMetadata?.width && session.frameMetadata?.height);
+  const effectiveMetadata = session.frameMetadata ?? videoSize;
+  const hasFrame = Boolean(session.mediaStream || (effectiveMetadata?.width && effectiveMetadata.height));
   const resolutionLabel = hasFrame
-    ? `${session.frameMetadata?.width} x ${session.frameMetadata?.height}`
+    ? effectiveMetadata?.width && effectiveMetadata.height
+      ? `${effectiveMetadata.width} x ${effectiveMetadata.height}`
+      : 'Live video'
     : 'No signal';
   const surfaceReady = session.status === 'connected' && hasFrame;
   const sendInput = session.sendInput;
@@ -113,6 +118,13 @@ export const RemoteSurface = ({ session }: Props) => {
     });
     pressedKeysRef.current.clear();
   }, [sendInput]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !session.mediaStream) return;
+    video.srcObject = session.mediaStream;
+    void video.play();
+  }, [session.mediaStream]);
 
   useEffect(() => {
     if (session.status !== 'connected') {
@@ -182,7 +194,7 @@ export const RemoteSurface = ({ session }: Props) => {
       const surface = surfaceRef.current;
       if (!surface) return null;
 
-      const display = resolveDisplayRect(surface, session.frameMetadata, fitMode);
+      const display = resolveDisplayRect(surface, effectiveMetadata, fitMode);
       if (!display) return null;
 
       return {
@@ -190,7 +202,7 @@ export const RemoteSurface = ({ session }: Props) => {
         y: clamp01((clientY - display.top) / display.height),
       };
     },
-    [fitMode, session.frameMetadata],
+    [effectiveMetadata, fitMode],
   );
 
   const sendPointerPosition = useCallback(
@@ -312,8 +324,15 @@ export const RemoteSurface = ({ session }: Props) => {
 
   const handleScreenshot = () => {
     const canvas = session.canvasRef.current;
-    if (!canvas || !canvas.width || !canvas.height) return;
-    canvas.toBlob((blob) => {
+    const video = videoRef.current;
+    if ((!canvas || !canvas.width || !canvas.height) && (!video || !video.videoWidth)) return;
+    const output = document.createElement('canvas');
+    output.width = video?.videoWidth || canvas?.width || 1;
+    output.height = video?.videoHeight || canvas?.height || 1;
+    const context = output.getContext('2d');
+    if (!context) return;
+    context.drawImage((video?.videoWidth ? video : canvas) as CanvasImageSource, 0, 0);
+    output.toBlob((blob) => {
       if (!blob) return;
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
@@ -436,22 +455,43 @@ export const RemoteSurface = ({ session }: Props) => {
               )}
             </div>
 
-            <canvas
-              ref={session.canvasRef}
-              className={clsx(
-                'select-none rounded-lg border border-white/5 shadow-2xl',
-                fitMode === 'contain' ? 'h-full w-full object-contain' : 'max-w-none',
-                !hasFrame && 'opacity-0',
-              )}
-              style={
-                fitMode === 'actual' && session.frameMetadata?.width && session.frameMetadata.height
-                  ? {
-                      width: `${session.frameMetadata.width}px`,
-                      height: `${session.frameMetadata.height}px`,
-                    }
-                  : undefined
-              }
-            />
+            {session.mediaStream ? (
+              <video
+                ref={videoRef}
+                autoPlay
+                muted
+                playsInline
+                onLoadedMetadata={(event) =>
+                  setVideoSize({
+                    width: event.currentTarget.videoWidth,
+                    height: event.currentTarget.videoHeight,
+                  })
+                }
+                className={clsx(
+                  'select-none rounded-lg border border-white/5 shadow-2xl',
+                  fitMode === 'contain' ? 'h-full w-full object-contain' : 'max-w-none',
+                )}
+                style={
+                  fitMode === 'actual' && effectiveMetadata?.width && effectiveMetadata.height
+                    ? { width: `${effectiveMetadata.width}px`, height: `${effectiveMetadata.height}px` }
+                    : undefined
+                }
+              />
+            ) : (
+              <canvas
+                ref={session.canvasRef}
+                className={clsx(
+                  'select-none rounded-lg border border-white/5 shadow-2xl',
+                  fitMode === 'contain' ? 'h-full w-full object-contain' : 'max-w-none',
+                  !hasFrame && 'opacity-0',
+                )}
+                style={
+                  fitMode === 'actual' && effectiveMetadata?.width && effectiveMetadata.height
+                    ? { width: `${effectiveMetadata.width}px`, height: `${effectiveMetadata.height}px` }
+                    : undefined
+                }
+              />
+            )}
 
             {!hasFrame && (
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-center text-white/55">

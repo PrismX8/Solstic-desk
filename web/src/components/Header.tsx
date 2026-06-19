@@ -4,6 +4,7 @@ import type { UpdateStatus } from '../types/desktop';
 
 export const Header = () => {
   const updates = window.solsticeDesktop?.updates;
+  const appVersion = window.solsticeDesktop?.appVersion ?? 'dev';
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [progress, setProgress] = useState(0);
 
@@ -57,7 +58,9 @@ export const Header = () => {
           <Sparkles className="h-6 w-6" />
         </div>
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-aurora">Solstice Desk</p>
+          <p className="text-xs uppercase tracking-[0.3em] text-aurora">
+            Solstice Desk <span className="text-white/45">v{appVersion}</span>
+          </p>
           <h1 className="text-2xl font-semibold text-white sm:text-3xl">Remote support console</h1>
         </div>
       </div>

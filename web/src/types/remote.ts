@@ -76,6 +76,7 @@ export interface RemoteSessionApi extends RemoteSessionState {
   sendFile: (file: File) => Promise<void>;
   resetError: () => void;
   canvasRef: RefObject<HTMLCanvasElement | null>;
+  mediaStream: MediaStream | null;
   frameMetadata: RemoteFrameMetadata | null;
 }
 
