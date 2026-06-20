@@ -20,7 +20,7 @@ export interface HostApi {
   start: (options?: { deviceName?: string }) => Promise<HostState>;
   stop: () => Promise<HostState>;
   getState: () => Promise<HostState>;
-  applyInput: (payload: Record<string, unknown>) => Promise<void>;
+  applyInput: (payload: Record<string, unknown>) => void;
   listCaptureSources: () => Promise<CaptureSource[]>;
   setCaptureSource: (sourceId: string) => Promise<void>;
   onState: (callback: (state: HostState) => void) => () => void;

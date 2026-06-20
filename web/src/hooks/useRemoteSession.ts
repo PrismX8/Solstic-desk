@@ -163,6 +163,8 @@ export const useRemoteSession = (): RemoteSessionApi => {
   const peerRef = useRef<Peer | null>(null);
   const connectionRef = useRef<DataConnection | null>(null);
   const controlConnectionRef = useRef<DataConnection | null>(null);
+  const pointerConnectionRef = useRef<DataConnection | null>(null);
+  const inputSequenceRef = useRef(0);
   const mediaPeerRef = useRef<RTCPeerConnection | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const mediaActiveRef = useRef(false);
@@ -208,7 +210,12 @@ export const useRemoteSession = (): RemoteSessionApi => {
   }, []);
 
   const sendMessage = useCallback((type: string, payload: Record<string, unknown>) => {
-    const preferred = type === 'input_event' ? controlConnectionRef.current : connectionRef.current;
+    const isPointerMove = type === 'input_event' && payload.kind === 'mouse_move';
+    const preferred = isPointerMove
+      ? pointerConnectionRef.current
+      : type === 'input_event'
+        ? controlConnectionRef.current
+        : connectionRef.current;
     const connection = preferred?.open ? preferred : connectionRef.current;
     if (!connection?.open) return false;
     connection.send({ type, payload });
@@ -322,6 +329,8 @@ export const useRemoteSession = (): RemoteSessionApi => {
     connectionRef.current = null;
     controlConnectionRef.current?.close();
     controlConnectionRef.current = null;
+    pointerConnectionRef.current?.close();
+    pointerConnectionRef.current = null;
     mediaPeerRef.current?.close();
     mediaPeerRef.current = null;
     remoteStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -703,6 +712,11 @@ export const useRemoteSession = (): RemoteSessionApi => {
         serialization: 'binary',
         metadata: { nickname, channel: 'control' },
       });
+      pointerConnectionRef.current = peer.connect(`${PEER_PREFIX}${code.toLowerCase()}`, {
+        reliable: false,
+        serialization: 'binary',
+        metadata: { nickname, channel: 'pointer' },
+      });
       connection.on('open', () => {
         connection.send({ type: 'viewer_join', payload: { code, nickname } });
       });
@@ -726,7 +740,12 @@ export const useRemoteSession = (): RemoteSessionApi => {
   }, [addActivity, cleanupSocket, handleMessage, sendMessage]);
 
   const sendInput = useCallback((payload: Record<string, unknown>) => {
-    sendMessage('input_event', payload);
+    inputSequenceRef.current += 1;
+    sendMessage('input_event', {
+      ...payload,
+      sequence: inputSequenceRef.current,
+      sentAt: Date.now(),
+    });
   }, [sendMessage]);
 
   const sendChat = useCallback((message: string) => {

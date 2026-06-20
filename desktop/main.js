@@ -102,7 +102,9 @@ ipcMain.handle('host:stop', async () => {
 });
 
 ipcMain.handle('host:getState', () => hostController.getState());
-ipcMain.handle('host:applyInput', (_event, payload) => hostController.applyInput(payload));
+ipcMain.on('host:applyInput', (_event, payload) => {
+  void hostController.applyInput(payload);
+});
 ipcMain.handle('host:listCaptureSources', async () => {
   const sources = await desktopCapturer.getSources({
     types: ['screen', 'window'],

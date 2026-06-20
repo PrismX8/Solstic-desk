@@ -233,10 +233,11 @@ export const RemoteSurface = ({ session }: Props) => {
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!isControlling || !surfaceReady || isResizing) return;
-    const now = Date.now();
-    if (now - lastMouseMoveTime.current < 16) return;
+    const latest = event.nativeEvent.getCoalescedEvents?.().at(-1) ?? event.nativeEvent;
+    const now = performance.now();
+    if (now - lastMouseMoveTime.current < 4) return;
     lastMouseMoveTime.current = now;
-    sendPointerPosition(event.clientX, event.clientY);
+    sendPointerPosition(latest.clientX, latest.clientY);
   };
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {

@@ -21,10 +21,10 @@ type PeerMessage = {
 };
 
 const STREAM_PROFILES = [
-  { name: 'Sharp', width: 1920, bitrate: 12_000_000, fps: 60 },
-  { name: 'Balanced', width: 1920, bitrate: 8_000_000, fps: 45 },
-  { name: 'Stable', width: 1600, bitrate: 6_000_000, fps: 45 },
-  { name: 'Responsive', width: 1280, bitrate: 4_000_000, fps: 30 },
+  { name: 'Sharp', width: 1920, bitrate: 16_000_000, fps: 120 },
+  { name: 'Balanced', width: 1920, bitrate: 12_000_000, fps: 90 },
+  { name: 'Stable', width: 1600, bitrate: 8_000_000, fps: 60 },
+  { name: 'Responsive', width: 1280, bitrate: 5_000_000, fps: 60 },
 ] as const;
 
 type AdaptiveSender = {
@@ -52,6 +52,7 @@ export const useHostSession = () => {
   const mediaReadyPeersRef = useRef(new Set<string>());
   const connectedAtRef = useRef(new Map<string, number>());
   const adaptiveSendersRef = useRef(new Map<string, AdaptiveSender>());
+  const latestPointerSequenceRef = useRef(new Map<string, number>());
 
   const applyStreamProfile = useCallback(async (key: string, profileIndex: number) => {
     const adaptive = adaptiveSendersRef.current.get(key);
@@ -186,6 +187,7 @@ export const useHostSession = () => {
     mediaReadyPeersRef.current.clear();
     connectedAtRef.current.clear();
     adaptiveSendersRef.current.clear();
+    latestPointerSequenceRef.current.clear();
     peerRef.current?.destroy();
     peerRef.current = null;
     if (frameTimerRef.current) window.clearTimeout(frameTimerRef.current);
@@ -219,7 +221,7 @@ export const useHostSession = () => {
         }
         const stream = await navigator.mediaDevices.getDisplayMedia({
           video: {
-            frameRate: { ideal: 60, max: 60 },
+            frameRate: { ideal: 120, max: 120 },
             width: { ideal: 3840, max: 3840 },
             height: { ideal: 2160, max: 2160 },
           },
@@ -228,9 +230,9 @@ export const useHostSession = () => {
         streamRef.current = stream;
         const videoTrack = stream.getVideoTracks()[0];
         if (!videoTrack) throw new Error('The selected source did not provide a video track.');
-        videoTrack.contentHint = 'text';
+        videoTrack.contentHint = 'detail';
         await videoTrack
-          .applyConstraints({ frameRate: { ideal: 60, max: 60 } })
+          .applyConstraints({ frameRate: { ideal: 120, max: 120 } })
           .catch(() => undefined);
 
         const video = document.createElement('video');
@@ -260,10 +262,11 @@ export const useHostSession = () => {
         });
 
         peer.on('connection', (connection) => {
-          const isControlChannel = connection.metadata?.channel === 'control';
+          const channel = connection.metadata?.channel;
+          const isInputChannel = channel === 'control' || channel === 'pointer';
           const connectionKey = connection.connectionId;
           connection.on('open', () => {
-            if (isControlChannel) return;
+            if (isInputChannel) return;
             connectionsRef.current.set(connectionKey, connection);
             connectedAtRef.current.set(connectionKey, Date.now());
             setState((previous) => ({
@@ -331,6 +334,12 @@ export const useHostSession = () => {
           connection.on('data', (raw) => {
             const message = raw as PeerMessage;
             if (message?.type === 'input_event' && message.payload && hostApi?.applyInput) {
+              if (message.payload.kind === 'mouse_move') {
+                const sequence = Number(message.payload.sequence || 0);
+                const latest = latestPointerSequenceRef.current.get(connection.peer) ?? 0;
+                if (sequence <= latest) return;
+                latestPointerSequenceRef.current.set(connection.peer, sequence);
+              }
               void hostApi.applyInput(message.payload);
             }
             if (message?.type === 'media_ready') {
@@ -366,7 +375,7 @@ export const useHostSession = () => {
           });
 
           const removeViewer = () => {
-            if (isControlChannel) return;
+            if (isInputChannel) return;
             connectionsRef.current.delete(connectionKey);
             mediaReadyPeersRef.current.delete(connection.peer);
             mediaPeersRef.current.get(connectionKey)?.close();
