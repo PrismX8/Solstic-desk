@@ -20,6 +20,7 @@ const isDev = Boolean(process.env.ELECTRON_START_URL);
 let mainWindow;
 let localRelay;
 let selectedCaptureSourceId;
+const captureSourceDisplayIds = new Map();
 let currentUpdateStatus = null;
 const hostController = new HostController();
 
@@ -111,15 +112,21 @@ ipcMain.handle('host:listCaptureSources', async () => {
     thumbnailSize: { width: 320, height: 180 },
     fetchWindowIcons: true,
   });
-  return sources.map((source) => ({
-    id: source.id,
-    name: source.name,
-    displayId: source.display_id,
-    thumbnail: source.thumbnail.toDataURL(),
-  }));
+  captureSourceDisplayIds.clear();
+  return sources.map((source) => {
+    if (source.display_id) captureSourceDisplayIds.set(source.id, source.display_id);
+    return {
+      id: source.id,
+      name: source.name,
+      displayId: source.display_id,
+      thumbnail: source.thumbnail.toDataURL(),
+    };
+  });
 });
 ipcMain.handle('host:setCaptureSource', (_event, sourceId) => {
   selectedCaptureSourceId = String(sourceId || '');
+  const selectedDisplayId = captureSourceDisplayIds.get(selectedCaptureSourceId) || null;
+  hostController.setInputDisplay(selectedDisplayId);
 });
 ipcMain.on('app:getVersion', (event) => {
   event.returnValue = app.getVersion();
@@ -241,9 +248,11 @@ app.whenReady().then(() => {
     }
   });
 
-  localRelay = startLocalRelay({
-    log: (message) => console.log(`[relay] ${message}`),
-  });
+  if (!process.env.SOLSTICE_DISABLE_LOCAL_RELAY) {
+    localRelay = startLocalRelay({
+      log: (message) => console.log(`[relay] ${message}`),
+    });
+  }
 
   createWindow();
 

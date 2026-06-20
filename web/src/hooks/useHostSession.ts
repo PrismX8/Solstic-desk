@@ -21,10 +21,10 @@ type PeerMessage = {
 };
 
 const STREAM_PROFILES = [
-  { name: 'Sharp', width: 1920, bitrate: 16_000_000, fps: 120 },
-  { name: 'Balanced', width: 1920, bitrate: 12_000_000, fps: 90 },
-  { name: 'Stable', width: 1600, bitrate: 8_000_000, fps: 60 },
-  { name: 'Responsive', width: 1280, bitrate: 5_000_000, fps: 60 },
+  { name: 'Sharp', width: 1920, bitrate: 9_000_000, fps: 120 },
+  { name: 'Balanced', width: 1920, bitrate: 6_000_000, fps: 90 },
+  { name: 'Stable', width: 1600, bitrate: 4_000_000, fps: 60 },
+  { name: 'Responsive', width: 1280, bitrate: 2_500_000, fps: 60 },
 ] as const;
 
 type AdaptiveSender = {
@@ -67,8 +67,8 @@ export const useHostSession = () => {
     parameters.encodings[0].priority = 'high';
     parameters.encodings[0].networkPriority = 'high';
     (parameters as RTCRtpSendParameters & {
-      degradationPreference?: 'maintain-resolution';
-    }).degradationPreference = 'maintain-resolution';
+      degradationPreference?: 'maintain-framerate';
+    }).degradationPreference = 'maintain-framerate';
     try {
       await adaptive.sender.setParameters(parameters);
       adaptive.profileIndex = boundedIndex;
@@ -221,7 +221,7 @@ export const useHostSession = () => {
         }
         const stream = await navigator.mediaDevices.getDisplayMedia({
           video: {
-            frameRate: { ideal: 120, max: 120 },
+            frameRate: { ideal: 90, max: 120 },
             width: { ideal: 3840, max: 3840 },
             height: { ideal: 2160, max: 2160 },
           },
@@ -232,7 +232,7 @@ export const useHostSession = () => {
         if (!videoTrack) throw new Error('The selected source did not provide a video track.');
         videoTrack.contentHint = 'detail';
         await videoTrack
-          .applyConstraints({ frameRate: { ideal: 120, max: 120 } })
+          .applyConstraints({ frameRate: { ideal: 90, max: 120 } })
           .catch(() => undefined);
 
         const video = document.createElement('video');

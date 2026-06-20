@@ -8,10 +8,17 @@ interface Props {
 
 export const ChatPanel = ({ session }: Props) => {
   const [message, setMessage] = useState('');
+  const messagesRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const previousMessageCountRef = useRef(0);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const previousCount = previousMessageCountRef.current;
+    previousMessageCountRef.current = session.chat.length;
+    if (session.chat.length <= previousCount) return;
+
+    const messages = messagesRef.current;
+    if (messages) messages.scrollTop = messages.scrollHeight;
   }, [session.chat]);
 
   const handleSend = (event: React.FormEvent) => {
@@ -35,7 +42,7 @@ export const ChatPanel = ({ session }: Props) => {
         </span>
       </div>
 
-      <div className="flex-1 space-y-3 overflow-y-auto rounded-2xl border border-white/5 bg-white/3 p-4">
+      <div ref={messagesRef} className="flex-1 space-y-3 overflow-y-auto rounded-2xl border border-white/5 bg-white/3 p-4">
         {session.chat.map((entry) => (
           <article
             key={entry.id}

@@ -59,6 +59,7 @@ class HostController extends EventEmitter {
     // Cache screen source to avoid repeated lookups
     this.cachedSource = null;
     this.mainDisplay = null;
+    this.inputDisplayId = null;
     this.lastSourceRefresh = 0;
     const SOURCE_CACHE_TTL = 30000; // Refresh source every 30 seconds
 
@@ -169,6 +170,10 @@ class HostController extends EventEmitter {
       if (this.ws !== ws) return;
       this.handleSocketFailure(error.message);
     });
+  }
+
+  setInputDisplay(displayId) {
+    this.inputDisplayId = displayId ? String(displayId) : null;
   }
 
   handleSocketFailure(message) {
@@ -443,8 +448,24 @@ class HostController extends EventEmitter {
 
   async applyInput(payload) {
     try {
-      const display = screen.getPrimaryDisplay();
-      await applyInputEvent(payload, display.bounds);
+      const display = screen.getAllDisplays().find(
+        (candidate) => candidate.id.toString() === this.inputDisplayId,
+      ) || screen.getPrimaryDisplay();
+      const nativeOrigin = screen.dipToScreenPoint({
+        x: display.bounds.x,
+        y: display.bounds.y,
+      });
+      const nativeEnd = screen.dipToScreenPoint({
+        x: display.bounds.x + display.bounds.width,
+        y: display.bounds.y + display.bounds.height,
+      });
+      const nativeBounds = {
+        x: nativeOrigin.x,
+        y: nativeOrigin.y,
+        width: Math.max(1, nativeEnd.x - nativeOrigin.x),
+        height: Math.max(1, nativeEnd.y - nativeOrigin.y),
+      };
+      await applyInputEvent(payload, nativeBounds);
     } catch (error) {
       console.error('[host] input error', error);
     }

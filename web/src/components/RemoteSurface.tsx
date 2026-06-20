@@ -80,7 +80,9 @@ export const RemoteSurface = ({ session }: Props) => {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const shellRef = useRef<HTMLDivElement>(null);
-  const lastMouseMoveTime = useRef(0);
+  const pointerTimerRef = useRef<number | null>(null);
+  const pendingPointerRef = useRef<NormalizedPoint | null>(null);
+  const lastPointerSentAtRef = useRef(0);
   const pressedButtonsRef = useRef(new Set<'left' | 'middle' | 'right'>());
   const pressedKeysRef = useRef(new Map<string, { key: string; code: string }>());
   const resizeStartRef = useRef<{
@@ -97,6 +99,7 @@ export const RemoteSurface = ({ session }: Props) => {
   const [isResizing, setIsResizing] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [videoSize, setVideoSize] = useState<{ width: number; height: number } | null>(null);
+  const [cursorStyle, setCursorStyle] = useState<{ left: number; top: number } | null>(null);
 
   const effectiveMetadata = session.frameMetadata ?? videoSize;
   const hasFrame = Boolean(session.mediaStream || (effectiveMetadata?.width && effectiveMetadata.height));
@@ -206,14 +209,67 @@ export const RemoteSurface = ({ session }: Props) => {
   );
 
   const sendPointerPosition = useCallback(
-    (clientX: number, clientY: number) => {
+    (clientX: number, clientY: number, reliable = false) => {
+      const surface = surfaceRef.current;
       const coords = getNormalizedCoords(clientX, clientY);
-      if (!coords) return;
+      if (!surface || !coords) return;
+      const display = resolveDisplayRect(surface, effectiveMetadata, fitMode);
+      const surfaceRect = surface.getBoundingClientRect();
+      if (!display) return;
       setCursor(coords);
-      session.sendInput({ kind: 'mouse_move', x: coords.x, y: coords.y });
+      setCursorStyle({
+        left: display.left - surfaceRect.left + coords.x * display.width,
+        top: display.top - surfaceRect.top + coords.y * display.height,
+      });
+      if (reliable) {
+        if (pointerTimerRef.current !== null) window.clearTimeout(pointerTimerRef.current);
+        pointerTimerRef.current = null;
+        pendingPointerRef.current = null;
+        lastPointerSentAtRef.current = performance.now();
+        session.sendInput({ kind: 'mouse_move', x: coords.x, y: coords.y, reliable: true });
+        return;
+      }
+
+      pendingPointerRef.current = coords;
+      if (pointerTimerRef.current !== null) return;
+      const delay = Math.max(0, 16 - (performance.now() - lastPointerSentAtRef.current));
+      pointerTimerRef.current = window.setTimeout(() => {
+        pointerTimerRef.current = null;
+        const latest = pendingPointerRef.current;
+        pendingPointerRef.current = null;
+        if (!latest) return;
+        lastPointerSentAtRef.current = performance.now();
+        session.sendInput({ kind: 'mouse_move', x: latest.x, y: latest.y });
+      }, delay);
     },
-    [getNormalizedCoords, session],
+    [effectiveMetadata, fitMode, getNormalizedCoords, session],
   );
+
+  useEffect(() => () => {
+    if (pointerTimerRef.current !== null) window.clearTimeout(pointerTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!isControlling) return undefined;
+    const releasePointer = (event: PointerEvent) => {
+      const button = event.button === 1 ? 'middle' : event.button === 2 ? 'right' : 'left';
+      if (!pressedButtonsRef.current.has(button)) return;
+      pressedButtonsRef.current.delete(button);
+      sendInput({ kind: 'mouse_up', button });
+    };
+    const releaseAllPointers = () => {
+      pressedButtonsRef.current.forEach((button) => sendInput({ kind: 'mouse_up', button }));
+      pressedButtonsRef.current.clear();
+    };
+    window.addEventListener('pointerup', releasePointer, true);
+    window.addEventListener('pointercancel', releasePointer, true);
+    window.addEventListener('blur', releaseAllPointers);
+    return () => {
+      window.removeEventListener('pointerup', releasePointer, true);
+      window.removeEventListener('pointercancel', releasePointer, true);
+      window.removeEventListener('blur', releaseAllPointers);
+    };
+  }, [isControlling, sendInput]);
 
   useEffect(() => {
     const surface = surfaceRef.current;
@@ -234,18 +290,17 @@ export const RemoteSurface = ({ session }: Props) => {
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!isControlling || !surfaceReady || isResizing) return;
     const latest = event.nativeEvent.getCoalescedEvents?.().at(-1) ?? event.nativeEvent;
-    const now = performance.now();
-    if (now - lastMouseMoveTime.current < 4) return;
-    lastMouseMoveTime.current = now;
     sendPointerPosition(latest.clientX, latest.clientY);
   };
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!isControlling || !surfaceReady || isResizing) return;
     event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    sendPointerPosition(event.clientX, event.clientY);
+    sendPointerPosition(event.clientX, event.clientY, true);
     const button = event.button === 1 ? 'middle' : event.button === 2 ? 'right' : 'left';
+    if (pressedButtonsRef.current.has(button)) {
+      session.sendInput({ kind: 'mouse_up', button });
+    }
     pressedButtonsRef.current.add(button);
     session.sendInput({ kind: 'mouse_down', button });
   };
@@ -253,10 +308,9 @@ export const RemoteSurface = ({ session }: Props) => {
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!isControlling || !surfaceReady) return;
     event.preventDefault();
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
+    sendPointerPosition(event.clientX, event.clientY, true);
     const button = event.button === 1 ? 'middle' : event.button === 2 ? 'right' : 'left';
+    if (!pressedButtonsRef.current.has(button)) return;
     pressedButtonsRef.current.delete(button);
     session.sendInput({ kind: 'mouse_up', button });
   };
@@ -506,10 +560,10 @@ export const RemoteSurface = ({ session }: Props) => {
                 <div className="absolute inset-x-4 top-3 mx-auto max-w-md rounded-full border border-aurora/30 bg-[#07141a]/90 px-4 py-2 text-center text-sm text-aurora shadow-glow">
                   Control active - press ` to release
                 </div>
-                {cursor && (
+                {cursor && cursorStyle && (
                   <div
                     className="absolute h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-aurora bg-aurora/40 shadow-glow"
-                    style={{ left: `${cursor.x * 100}%`, top: `${cursor.y * 100}%` }}
+                    style={{ left: `${cursorStyle.left}px`, top: `${cursorStyle.top}px` }}
                   />
                 )}
               </div>

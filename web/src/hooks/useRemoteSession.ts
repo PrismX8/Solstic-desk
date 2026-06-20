@@ -210,12 +210,9 @@ export const useRemoteSession = (): RemoteSessionApi => {
   }, []);
 
   const sendMessage = useCallback((type: string, payload: Record<string, unknown>) => {
-    const isPointerMove = type === 'input_event' && payload.kind === 'mouse_move';
-    const preferred = isPointerMove
-      ? pointerConnectionRef.current
-      : type === 'input_event'
-        ? controlConnectionRef.current
-        : connectionRef.current;
+    const preferred = type === 'input_event'
+      ? controlConnectionRef.current
+      : connectionRef.current;
     const connection = preferred?.open ? preferred : connectionRef.current;
     if (!connection?.open) return false;
     connection.send({ type, payload });
