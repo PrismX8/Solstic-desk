@@ -476,6 +476,7 @@ export const useRemoteSession = (): RemoteSessionApi => {
       }
     };
     mediaPeer.ontrack = async (event) => {
+      (event.receiver as RTCRtpReceiver & { playoutDelayHint?: number }).playoutDelayHint = 0.08;
       const stream = event.streams[0] ?? new MediaStream([event.track]);
       remoteStreamRef.current = stream;
       mediaActiveRef.current = true;
@@ -489,6 +490,8 @@ export const useRemoteSession = (): RemoteSessionApi => {
       sendMessage('media_ready', {});
 
       let previousFrames = 0;
+      let previousPacketsLost = 0;
+      let previousPacketsReceived = 0;
       let previousTime = performance.now();
       if (mediaStatsTimerRef.current) window.clearInterval(mediaStatsTimerRef.current);
       mediaStatsTimerRef.current = window.setInterval(async () => {
@@ -507,10 +510,35 @@ export const useRemoteSession = (): RemoteSessionApi => {
         previousTime = currentTime;
         const width = Number(inbound.frameWidth || event.track.getSettings().width || 0);
         const height = Number(inbound.frameHeight || event.track.getSettings().height || 0);
+        const packetsLost = Number(inbound.packetsLost || 0);
+        const packetsReceived = Number(inbound.packetsReceived || 0);
+        const lostDelta = Math.max(0, packetsLost - previousPacketsLost);
+        const receivedDelta = Math.max(0, packetsReceived - previousPacketsReceived);
+        previousPacketsLost = packetsLost;
+        previousPacketsReceived = packetsReceived;
+        const lossRate = lostDelta / Math.max(1, lostDelta + receivedDelta);
+        const candidatePair = [...reports.values()].find(
+          (report) =>
+            report.type === 'candidate-pair' &&
+            report.state === 'succeeded' &&
+            (report.nominated || report.selected),
+        );
+        const rttMs = Number(candidatePair?.currentRoundTripTime || 0) * 1000;
         setState((previous) =>
-          previous.fps === measuredFps ? previous : { ...previous, fps: measuredFps },
+          previous.fps === measuredFps && previous.latency === Math.round(rttMs)
+            ? previous
+            : { ...previous, fps: measuredFps, latency: Math.round(rttMs) },
         );
         if (width && height) setFrameMetadata({ width, height, cursors: [] });
+        sendMessage('quality_report', {
+          fps: measuredFps,
+          lossRate,
+          jitter: Number(inbound.jitter || 0),
+          framesDropped: Number(inbound.framesDropped || 0),
+          width,
+          height,
+          rttMs,
+        });
       }, 1000);
     };
     mediaPeer.onconnectionstatechange = () => {
@@ -580,6 +608,14 @@ export const useRemoteSession = (): RemoteSessionApi => {
 
       case 'rtc_ice':
         if (payload.candidate) addRtcIceCandidate(payload.candidate as RTCIceCandidateInit);
+        break;
+
+      case 'stream_profile':
+        addActivity({
+          label: `Stream ${String(payload.name || 'adjusted')}`,
+          detail: `${Math.round(Number(payload.width || 0))}p target · ${Math.round(Number(payload.fps || 0))} fps`,
+          tone: 'info',
+        });
         break;
 
       case 'chat_message':

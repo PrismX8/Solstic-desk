@@ -146,12 +146,12 @@ export const HostPanel = () => {
               <p className="font-semibold text-white">{state.fps ?? 0}</p>
             </div>
             <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-              <p className="text-[10px] uppercase tracking-[0.24em] text-white/40">Capture</p>
+              <p className="text-[10px] uppercase tracking-[0.24em] text-white/40">RTT</p>
               <p className="font-semibold text-white">{state.captureMs ?? 0} ms</p>
             </div>
             <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-              <p className="text-[10px] uppercase tracking-[0.24em] text-white/40">Dropped</p>
-              <p className="font-semibold text-white">{state.droppedFrames ?? 0}</p>
+              <p className="text-[10px] uppercase tracking-[0.24em] text-white/40">Loss</p>
+              <p className="font-semibold text-white">{state.droppedFrames ?? 0}%</p>
             </div>
           </div>
         )}

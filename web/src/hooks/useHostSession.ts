@@ -20,6 +20,24 @@ type PeerMessage = {
   payload?: Record<string, unknown>;
 };
 
+const STREAM_PROFILES = [
+  { name: 'Ultra', width: 3840, bitrate: 20_000_000, fps: 60 },
+  { name: 'Sharp', width: 1920, bitrate: 12_000_000, fps: 60 },
+  { name: 'Balanced', width: 1920, bitrate: 8_000_000, fps: 45 },
+  { name: 'Stable', width: 1600, bitrate: 6_000_000, fps: 45 },
+  { name: 'Responsive', width: 1280, bitrate: 4_000_000, fps: 30 },
+  { name: 'Recovery', width: 960, bitrate: 2_000_000, fps: 30 },
+] as const;
+
+type AdaptiveSender = {
+  sender: RTCRtpSender;
+  connection: DataConnection;
+  sourceWidth: number;
+  profileIndex: number;
+  goodSamples: number;
+  lastAdjustment: number;
+};
+
 export const useHostSession = () => {
   const hostApi = window.solsticeDesktop?.host;
   const captureAvailable = Boolean(navigator.mediaDevices?.getDisplayMedia);
@@ -34,19 +52,84 @@ export const useHostSession = () => {
   const mediaPeersRef = useRef(new Map<string, RTCPeerConnection>());
   const pendingIceRef = useRef(new Map<string, RTCIceCandidateInit[]>());
   const mediaReadyPeersRef = useRef(new Set<string>());
+  const connectedAtRef = useRef(new Map<string, number>());
+  const adaptiveSendersRef = useRef(new Map<string, AdaptiveSender>());
+
+  const applyStreamProfile = useCallback(async (key: string, profileIndex: number) => {
+    const adaptive = adaptiveSendersRef.current.get(key);
+    if (!adaptive) return;
+    const boundedIndex = Math.max(0, Math.min(STREAM_PROFILES.length - 1, profileIndex));
+    const profile = STREAM_PROFILES[boundedIndex];
+    const parameters = adaptive.sender.getParameters();
+    parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
+    parameters.encodings[0].maxBitrate = profile.bitrate;
+    parameters.encodings[0].maxFramerate = profile.fps;
+    parameters.encodings[0].scaleResolutionDownBy = Math.max(1, adaptive.sourceWidth / profile.width);
+    parameters.encodings[0].priority = 'high';
+    parameters.encodings[0].networkPriority = 'high';
+    (parameters as RTCRtpSendParameters & {
+      degradationPreference?: 'maintain-framerate';
+    }).degradationPreference = 'maintain-framerate';
+    try {
+      await adaptive.sender.setParameters(parameters);
+      adaptive.profileIndex = boundedIndex;
+      adaptive.lastAdjustment = Date.now();
+      adaptive.connection.send({
+        type: 'stream_profile',
+        payload: { name: profile.name, bitrate: profile.bitrate, fps: profile.fps, width: profile.width },
+      });
+    } catch {
+      // Browser congestion control remains active if a parameter is unsupported.
+    }
+  }, []);
+
+  const handleQualityReport = useCallback((key: string, payload: Record<string, unknown>) => {
+    const adaptive = adaptiveSendersRef.current.get(key);
+    if (!adaptive) return;
+    const profile = STREAM_PROFILES[adaptive.profileIndex];
+    const fps = Number(payload.fps || 0);
+    const lossRate = Number(payload.lossRate || 0);
+    const jitter = Number(payload.jitter || 0);
+    const rttMs = Number(payload.rttMs || 0);
+    const now = Date.now();
+    const severe = lossRate > 0.08 || jitter > 0.09 || (fps > 0 && fps < 18);
+    const degraded = lossRate > 0.025 || jitter > 0.045 || (fps > 0 && fps < profile.fps * 0.68);
+    const healthy = lossRate < 0.008 && jitter < 0.025 && fps >= Math.min(55, profile.fps * 0.88);
+
+    setState((previous) => ({
+      ...previous,
+      fps: Math.round(fps),
+      captureMs: Math.round(rttMs),
+      droppedFrames: Math.round(lossRate * 100),
+    }));
+
+    if ((severe || degraded) && now - adaptive.lastAdjustment > 2500) {
+      adaptive.goodSamples = 0;
+      void applyStreamProfile(key, adaptive.profileIndex + (severe ? 2 : 1));
+      return;
+    }
+    if (healthy) adaptive.goodSamples += 1;
+    else adaptive.goodSamples = 0;
+    if (adaptive.goodSamples >= 8 && adaptive.profileIndex > 0 && now - adaptive.lastAdjustment > 10_000) {
+      adaptive.goodSamples = 0;
+      void applyStreamProfile(key, adaptive.profileIndex - 1);
+    }
+  }, [applyStreamProfile]);
 
   const captureFrame = useCallback(() => {
     const started = performance.now();
     const scheduleNext = () => {
       frameTimerRef.current = window.setTimeout(
         captureFrame,
-        Math.max(0, 100 - (performance.now() - started)),
+        Math.max(0, 500 - (performance.now() - started)),
       );
     };
 
     const video = videoRef.current;
     const fallbackConnections = [...connectionsRef.current.values()].filter(
-      (connection) => !mediaReadyPeersRef.current.has(connection.peer),
+      (connection) =>
+        !mediaReadyPeersRef.current.has(connection.peer) &&
+        Date.now() - (connectedAtRef.current.get(connection.connectionId) ?? Date.now()) >= 5000,
     );
     if (
       captureBusyRef.current ||
@@ -60,7 +143,7 @@ export const useHostSession = () => {
 
     captureBusyRef.current = true;
     try {
-      const scale = Math.min(1, 1920 / video.videoWidth);
+      const scale = Math.min(1, 1280 / video.videoWidth);
       const width = Math.max(1, Math.round(video.videoWidth * scale));
       const height = Math.max(1, Math.round(video.videoHeight * scale));
       const canvas = canvasRef.current ?? document.createElement('canvas');
@@ -70,7 +153,7 @@ export const useHostSession = () => {
       const context = canvas.getContext('2d', { alpha: false });
       if (!context) return;
       context.drawImage(video, 0, 0, width, height);
-      const data = canvas.toDataURL('image/jpeg', 0.82).split(',')[1];
+      const data = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
       if (!data) return;
       const message = {
         type: 'frame',
@@ -105,6 +188,8 @@ export const useHostSession = () => {
     mediaPeersRef.current.clear();
     pendingIceRef.current.clear();
     mediaReadyPeersRef.current.clear();
+    connectedAtRef.current.clear();
+    adaptiveSendersRef.current.clear();
     peerRef.current?.destroy();
     peerRef.current = null;
     if (frameTimerRef.current) window.clearTimeout(frameTimerRef.current);
@@ -184,6 +269,7 @@ export const useHostSession = () => {
           connection.on('open', () => {
             if (isControlChannel) return;
             connectionsRef.current.set(connectionKey, connection);
+            connectedAtRef.current.set(connectionKey, Date.now());
             setState((previous) => ({
               ...previous,
               viewers: connectionsRef.current.size,
@@ -227,25 +313,19 @@ export const useHostSession = () => {
               return 3;
             };
             transceiver.setCodecPreferences([...codecs].sort((a, b) => codecRank(a) - codecRank(b)));
-            const configureSender = () => {
-              const parameters = videoSender.getParameters();
-              parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
-              parameters.encodings[0].maxBitrate = 50_000_000;
-              parameters.encodings[0].maxFramerate = 60;
-              parameters.encodings[0].scaleResolutionDownBy = 1;
-              parameters.encodings[0].priority = 'high';
-              parameters.encodings[0].networkPriority = 'high';
-              (parameters as RTCRtpSendParameters & {
-                degradationPreference?: 'maintain-framerate';
-              }).degradationPreference = 'maintain-framerate';
-              void videoSender.setParameters(parameters).catch(() => undefined);
-            };
-            configureSender();
+            adaptiveSendersRef.current.set(connectionKey, {
+              sender: videoSender,
+              connection,
+              sourceWidth: videoTrack.getSettings().width || video.videoWidth || 1920,
+              profileIndex: 1,
+              goodSamples: 0,
+              lastAdjustment: 0,
+            });
             void mediaPeer
               .createOffer()
               .then((offer) => mediaPeer.setLocalDescription(offer).then(() => offer))
               .then((offer) => {
-                configureSender();
+                void applyStreamProfile(connectionKey, 1);
                 if (connection.open) {
                   connection.send({ type: 'rtc_offer', payload: { sdp: offer.sdp } });
                 }
@@ -262,6 +342,9 @@ export const useHostSession = () => {
             }
             if (message?.type === 'media_unavailable') {
               mediaReadyPeersRef.current.delete(connection.peer);
+            }
+            if (message?.type === 'quality_report' && message.payload) {
+              handleQualityReport(connectionKey, message.payload);
             }
             const mediaPeer = mediaPeersRef.current.get(connectionKey);
             if (message?.type === 'rtc_answer' && mediaPeer && message.payload?.sdp) {
@@ -293,6 +376,8 @@ export const useHostSession = () => {
             mediaPeersRef.current.get(connectionKey)?.close();
             mediaPeersRef.current.delete(connectionKey);
             pendingIceRef.current.delete(connectionKey);
+            connectedAtRef.current.delete(connectionKey);
+            adaptiveSendersRef.current.delete(connectionKey);
             setState((previous) => ({
               ...previous,
               viewers: connectionsRef.current.size,
@@ -319,7 +404,7 @@ export const useHostSession = () => {
         });
       }
     },
-    [captureAvailable, captureFrame, hostApi, stop],
+    [applyStreamProfile, captureAvailable, captureFrame, handleQualityReport, hostApi, stop],
   );
 
   useEffect(() => () => {
