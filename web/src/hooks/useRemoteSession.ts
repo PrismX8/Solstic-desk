@@ -492,6 +492,7 @@ export const useRemoteSession = (): RemoteSessionApi => {
       let previousFrames = 0;
       let previousPacketsLost = 0;
       let previousPacketsReceived = 0;
+      let previousFramesDropped = 0;
       let previousTime = performance.now();
       if (mediaStatsTimerRef.current) window.clearInterval(mediaStatsTimerRef.current);
       mediaStatsTimerRef.current = window.setInterval(async () => {
@@ -517,6 +518,9 @@ export const useRemoteSession = (): RemoteSessionApi => {
         previousPacketsLost = packetsLost;
         previousPacketsReceived = packetsReceived;
         const lossRate = lostDelta / Math.max(1, lostDelta + receivedDelta);
+        const framesDropped = Number(inbound.framesDropped || 0);
+        const droppedDelta = Math.max(0, framesDropped - previousFramesDropped);
+        previousFramesDropped = framesDropped;
         const candidatePair = [...reports.values()].find(
           (report) =>
             report.type === 'candidate-pair' &&
@@ -534,7 +538,8 @@ export const useRemoteSession = (): RemoteSessionApi => {
           fps: measuredFps,
           lossRate,
           jitter: Number(inbound.jitter || 0),
-          framesDropped: Number(inbound.framesDropped || 0),
+          framesDropped,
+          droppedDelta,
           width,
           height,
           rttMs,

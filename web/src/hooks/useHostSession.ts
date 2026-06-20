@@ -21,12 +21,10 @@ type PeerMessage = {
 };
 
 const STREAM_PROFILES = [
-  { name: 'Ultra', width: 3840, bitrate: 20_000_000, fps: 60 },
   { name: 'Sharp', width: 1920, bitrate: 12_000_000, fps: 60 },
   { name: 'Balanced', width: 1920, bitrate: 8_000_000, fps: 45 },
   { name: 'Stable', width: 1600, bitrate: 6_000_000, fps: 45 },
   { name: 'Responsive', width: 1280, bitrate: 4_000_000, fps: 30 },
-  { name: 'Recovery', width: 960, bitrate: 2_000_000, fps: 30 },
 ] as const;
 
 type AdaptiveSender = {
@@ -68,8 +66,8 @@ export const useHostSession = () => {
     parameters.encodings[0].priority = 'high';
     parameters.encodings[0].networkPriority = 'high';
     (parameters as RTCRtpSendParameters & {
-      degradationPreference?: 'maintain-framerate';
-    }).degradationPreference = 'maintain-framerate';
+      degradationPreference?: 'maintain-resolution';
+    }).degradationPreference = 'maintain-resolution';
     try {
       await adaptive.sender.setParameters(parameters);
       adaptive.profileIndex = boundedIndex;
@@ -86,15 +84,13 @@ export const useHostSession = () => {
   const handleQualityReport = useCallback((key: string, payload: Record<string, unknown>) => {
     const adaptive = adaptiveSendersRef.current.get(key);
     if (!adaptive) return;
-    const profile = STREAM_PROFILES[adaptive.profileIndex];
     const fps = Number(payload.fps || 0);
     const lossRate = Number(payload.lossRate || 0);
-    const jitter = Number(payload.jitter || 0);
     const rttMs = Number(payload.rttMs || 0);
     const now = Date.now();
-    const severe = lossRate > 0.08 || jitter > 0.09 || (fps > 0 && fps < 18);
-    const degraded = lossRate > 0.025 || jitter > 0.045 || (fps > 0 && fps < profile.fps * 0.68);
-    const healthy = lossRate < 0.008 && jitter < 0.025 && fps >= Math.min(55, profile.fps * 0.88);
+    const severe = lossRate > 0.1 || rttMs > 650;
+    const degraded = lossRate > 0.035 || rttMs > 350;
+    const healthy = lossRate < 0.01 && (rttMs === 0 || rttMs < 220);
 
     setState((previous) => ({
       ...previous,
@@ -103,14 +99,14 @@ export const useHostSession = () => {
       droppedFrames: Math.round(lossRate * 100),
     }));
 
-    if ((severe || degraded) && now - adaptive.lastAdjustment > 2500) {
+    if ((severe || degraded) && now - adaptive.lastAdjustment > 5000) {
       adaptive.goodSamples = 0;
-      void applyStreamProfile(key, adaptive.profileIndex + (severe ? 2 : 1));
+      void applyStreamProfile(key, adaptive.profileIndex + 1);
       return;
     }
     if (healthy) adaptive.goodSamples += 1;
     else adaptive.goodSamples = 0;
-    if (adaptive.goodSamples >= 8 && adaptive.profileIndex > 0 && now - adaptive.lastAdjustment > 10_000) {
+    if (adaptive.goodSamples >= 15 && adaptive.profileIndex > 0 && now - adaptive.lastAdjustment > 15_000) {
       adaptive.goodSamples = 0;
       void applyStreamProfile(key, adaptive.profileIndex - 1);
     }
@@ -232,7 +228,7 @@ export const useHostSession = () => {
         streamRef.current = stream;
         const videoTrack = stream.getVideoTracks()[0];
         if (!videoTrack) throw new Error('The selected source did not provide a video track.');
-        videoTrack.contentHint = 'motion';
+        videoTrack.contentHint = 'text';
         await videoTrack
           .applyConstraints({ frameRate: { ideal: 60, max: 60 } })
           .catch(() => undefined);
@@ -317,7 +313,7 @@ export const useHostSession = () => {
               sender: videoSender,
               connection,
               sourceWidth: videoTrack.getSettings().width || video.videoWidth || 1920,
-              profileIndex: 1,
+              profileIndex: 0,
               goodSamples: 0,
               lastAdjustment: 0,
             });
@@ -325,7 +321,7 @@ export const useHostSession = () => {
               .createOffer()
               .then((offer) => mediaPeer.setLocalDescription(offer).then(() => offer))
               .then((offer) => {
-                void applyStreamProfile(connectionKey, 1);
+                void applyStreamProfile(connectionKey, 0);
                 if (connection.open) {
                   connection.send({ type: 'rtc_offer', payload: { sdp: offer.sdp } });
                 }
