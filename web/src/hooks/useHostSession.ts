@@ -45,11 +45,14 @@ export const useHostSession = () => {
     };
 
     const video = videoRef.current;
+    const fallbackConnections = [...connectionsRef.current.values()].filter(
+      (connection) => !mediaReadyPeersRef.current.has(connection.peer),
+    );
     if (
       captureBusyRef.current ||
       !video ||
       video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
-      connectionsRef.current.size === 0
+      fallbackConnections.length === 0
     ) {
       scheduleNext();
       return;
@@ -80,7 +83,7 @@ export const useHostSession = () => {
           timestamp: Date.now(),
         },
       };
-      connectionsRef.current.forEach((connection) => {
+      fallbackConnections.forEach((connection) => {
         if (
           !mediaReadyPeersRef.current.has(connection.peer) &&
           connection.open &&
@@ -144,7 +147,7 @@ export const useHostSession = () => {
         streamRef.current = stream;
         const videoTrack = stream.getVideoTracks()[0];
         if (!videoTrack) throw new Error('The selected source did not provide a video track.');
-        videoTrack.contentHint = 'detail';
+        videoTrack.contentHint = 'motion';
         await videoTrack
           .applyConstraints({ frameRate: { ideal: 60, max: 60 } })
           .catch(() => undefined);
@@ -210,13 +213,31 @@ export const useHostSession = () => {
                 });
               }
             };
-            const videoSender = mediaPeer.addTrack(videoTrack, stream);
+            const transceiver = mediaPeer.addTransceiver(videoTrack, {
+              direction: 'sendonly',
+              streams: [stream],
+            });
+            const videoSender = transceiver.sender;
+            const codecs = RTCRtpSender.getCapabilities('video')?.codecs ?? [];
+            const codecRank = (codec: { mimeType: string }) => {
+              const mime = codec.mimeType.toLowerCase();
+              if (mime === 'video/h264') return 0;
+              if (mime === 'video/vp9') return 1;
+              if (mime === 'video/vp8') return 2;
+              return 3;
+            };
+            transceiver.setCodecPreferences([...codecs].sort((a, b) => codecRank(a) - codecRank(b)));
             const configureSender = () => {
               const parameters = videoSender.getParameters();
               parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
-              parameters.encodings[0].maxBitrate = 35_000_000;
+              parameters.encodings[0].maxBitrate = 50_000_000;
               parameters.encodings[0].maxFramerate = 60;
               parameters.encodings[0].scaleResolutionDownBy = 1;
+              parameters.encodings[0].priority = 'high';
+              parameters.encodings[0].networkPriority = 'high';
+              (parameters as RTCRtpSendParameters & {
+                degradationPreference?: 'maintain-framerate';
+              }).degradationPreference = 'maintain-framerate';
               void videoSender.setParameters(parameters).catch(() => undefined);
             };
             configureSender();
@@ -224,6 +245,7 @@ export const useHostSession = () => {
               .createOffer()
               .then((offer) => mediaPeer.setLocalDescription(offer).then(() => offer))
               .then((offer) => {
+                configureSender();
                 if (connection.open) {
                   connection.send({ type: 'rtc_offer', payload: { sdp: offer.sdp } });
                 }

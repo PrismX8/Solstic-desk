@@ -58,9 +58,12 @@ export const Header = () => {
           <Sparkles className="h-6 w-6" />
         </div>
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-aurora">
-            Solstice Desk <span className="text-white/45">v{appVersion}</span>
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs uppercase tracking-[0.3em] text-aurora">Solstice Desk</p>
+            <span className="rounded border border-white/15 bg-white/[0.07] px-2 py-0.5 text-xs font-semibold text-white/80">
+              Version {appVersion}
+            </span>
+          </div>
           <h1 className="text-2xl font-semibold text-white sm:text-3xl">Remote support console</h1>
         </div>
       </div>

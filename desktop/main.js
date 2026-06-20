@@ -12,6 +12,10 @@ const { autoUpdater } = require('electron-updater');
 const { HostController } = require('./host/controller');
 const { startLocalRelay } = require('./relay');
 
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+
 const isDev = Boolean(process.env.ELECTRON_START_URL);
 let mainWindow;
 let localRelay;
