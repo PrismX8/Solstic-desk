@@ -201,7 +201,7 @@ ipcMain.handle('check-for-updates', () => {
 // IPC handler to install update
 ipcMain.handle('install-update', () => {
   if (!isDev) {
-    autoUpdater.quitAndInstall(false, true);
+    autoUpdater.quitAndInstall(true, true);
   }
 });
 
