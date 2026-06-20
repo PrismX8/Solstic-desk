@@ -10,6 +10,12 @@ export const Header = () => {
 
   useEffect(() => {
     if (!updates) return undefined;
+    void updates.getStatus().then((status) => {
+      if (status) {
+        setUpdate(status);
+        if (status.percent) setProgress(Math.round(status.percent));
+      }
+    });
     const removeStatus = updates.onUpdateStatus(setUpdate);
     const removeProgress = updates.onUpdateProgress((next) => {
       setProgress(Math.round(next.percent));
@@ -22,7 +28,17 @@ export const Header = () => {
   }, [updates]);
 
   const updateControl = (() => {
-    if (!update || update.status === 'not-available' || update.status === 'error') return null;
+    if (!update || update.status === 'not-available') return null;
+    if (update.status === 'error') {
+      return (
+        <span
+          title={update.error}
+          className="inline-flex items-center gap-2 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-rose-200"
+        >
+          Update failed
+        </span>
+      );
+    }
     if (update.status === 'downloaded') {
       return (
         <button

@@ -20,7 +20,15 @@ const isDev = Boolean(process.env.ELECTRON_START_URL);
 let mainWindow;
 let localRelay;
 let selectedCaptureSourceId;
+let currentUpdateStatus = null;
 const hostController = new HostController();
+
+const publishUpdateStatus = (status) => {
+  currentUpdateStatus = status;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', status);
+  }
+};
 
 const createWindow = () => {
   mainWindow = new BrowserWindow({
@@ -111,6 +119,10 @@ ipcMain.handle('host:listCaptureSources', async () => {
 ipcMain.handle('host:setCaptureSource', (_event, sourceId) => {
   selectedCaptureSourceId = String(sourceId || '');
 });
+ipcMain.on('app:getVersion', (event) => {
+  event.returnValue = app.getVersion();
+});
+ipcMain.handle('updates:getStatus', () => currentUpdateStatus);
 
 // Configure auto-updater
 autoUpdater.autoDownload = true;
@@ -119,39 +131,26 @@ autoUpdater.autoInstallOnAppQuit = true;
 // Auto-updater event handlers
 autoUpdater.on('checking-for-update', () => {
   console.log('[updater] Checking for updates...');
-  if (mainWindow) {
-    mainWindow.webContents.send('update-status', { status: 'checking' });
-  }
+  publishUpdateStatus({ status: 'checking' });
 });
 
 autoUpdater.on('update-available', (info) => {
   console.log('[updater] Update available:', info.version);
-  if (mainWindow) {
-    mainWindow.webContents.send('update-status', { 
-      status: 'available', 
-      version: info.version 
-    });
-  }
+  publishUpdateStatus({ status: 'available', version: info.version });
 });
 
 autoUpdater.on('update-not-available', () => {
   console.log('[updater] Update not available');
-  if (mainWindow) {
-    mainWindow.webContents.send('update-status', { status: 'not-available' });
-  }
+  publishUpdateStatus({ status: 'not-available' });
 });
 
 autoUpdater.on('error', (err) => {
   console.error('[updater] Error:', err);
-  if (mainWindow) {
-    mainWindow.webContents.send('update-status', { 
-      status: 'error', 
-      error: err.message 
-    });
-  }
+  publishUpdateStatus({ status: 'error', error: err.message });
 });
 
 autoUpdater.on('download-progress', (progressObj) => {
+  publishUpdateStatus({ status: 'downloading', percent: progressObj.percent });
   if (mainWindow) {
     mainWindow.webContents.send('update-progress', {
       percent: progressObj.percent,
@@ -163,12 +162,7 @@ autoUpdater.on('download-progress', (progressObj) => {
 
 autoUpdater.on('update-downloaded', (info) => {
   console.log('[updater] Update downloaded:', info.version);
-  if (mainWindow) {
-    mainWindow.webContents.send('update-status', { 
-      status: 'downloaded',
-      version: info.version 
-    });
-  }
+  publishUpdateStatus({ status: 'downloaded', version: info.version });
   // Auto-install on next app quit, or user can trigger manually
 });
 
@@ -179,13 +173,17 @@ if (!isDev) {
     // Wait a bit before first check to let app fully initialize
     setTimeout(() => {
       console.log('[updater] Checking for updates (production mode only)...');
-      autoUpdater.checkForUpdates();
+      autoUpdater.checkForUpdates().catch((error) => {
+        console.error('[updater] Startup check failed', error);
+      });
     }, 3000);
     
     // Check for updates every 4 hours
     setInterval(() => {
-      autoUpdater.checkForUpdates();
-    }, 4 * 60 * 60 * 1000);
+      autoUpdater.checkForUpdates().catch((error) => {
+        console.error('[updater] Scheduled check failed', error);
+      });
+    }, 30 * 60 * 1000);
   });
 } else {
   console.log('[updater] Auto-updates disabled in development mode');

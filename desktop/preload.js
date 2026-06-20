@@ -21,6 +21,7 @@ const hostApi = {
 
 const updateApi = {
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  getStatus: () => ipcRenderer.invoke('updates:getStatus'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
   onUpdateStatus: (callback) => {
     const handler = (_event, data) => callback(data);
@@ -35,7 +36,7 @@ const updateApi = {
 };
 
 contextBridge.exposeInMainWorld('solsticeDesktop', {
-  appVersion: require('./package.json').version,
+  appVersion: ipcRenderer.sendSync('app:getVersion'),
   platform: process.platform,
   versions: {
     electron: process.versions.electron,

@@ -31,10 +31,12 @@ export type UpdateStatus = {
   status: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
   version?: string;
   error?: string;
+  percent?: number;
 };
 
 export interface UpdateApi {
   checkForUpdates: () => Promise<unknown>;
+  getStatus: () => Promise<UpdateStatus | null>;
   installUpdate: () => Promise<void>;
   onUpdateStatus: (callback: (status: UpdateStatus) => void) => () => void;
   onUpdateProgress: (

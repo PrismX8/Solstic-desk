@@ -24,8 +24,7 @@
         "target": "nsis",
         "arch": ["x64"]
       }
-    ],
-    "publisherName": "Solstice Desk"
+    ]
   },
   "nsis": {
     "oneClick": false,
