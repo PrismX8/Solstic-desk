@@ -4,6 +4,8 @@ import type { HostState } from '../types/desktop';
 
 const PEER_PREFIX = 'solstice-';
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const TARGET_CAPTURE_FPS = 240;
+const FALLBACK_FRAME_INTERVAL_MS = 1000 / 15;
 
 const initialState: HostState = {
   status: 'idle',
@@ -21,10 +23,11 @@ type PeerMessage = {
 };
 
 const STREAM_PROFILES = [
-  { name: 'Sharp', width: 1920, bitrate: 9_000_000, fps: 120 },
-  { name: 'Balanced', width: 1920, bitrate: 6_000_000, fps: 90 },
-  { name: 'Stable', width: 1600, bitrate: 4_000_000, fps: 60 },
-  { name: 'Responsive', width: 1280, bitrate: 2_500_000, fps: 60 },
+  { name: 'Ultra', width: 1920, bitrate: 24_000_000, fps: 240 },
+  { name: 'High refresh', width: 1920, bitrate: 16_000_000, fps: 144 },
+  { name: 'Sharp', width: 1920, bitrate: 10_000_000, fps: 120 },
+  { name: 'Balanced', width: 1600, bitrate: 6_000_000, fps: 90 },
+  { name: 'Responsive', width: 1280, bitrate: 3_500_000, fps: 60 },
 ] as const;
 
 type AdaptiveSender = {
@@ -118,7 +121,7 @@ export const useHostSession = () => {
     const scheduleNext = () => {
       frameTimerRef.current = window.setTimeout(
         captureFrame,
-        Math.max(0, 500 - (performance.now() - started)),
+        Math.max(0, FALLBACK_FRAME_INTERVAL_MS - (performance.now() - started)),
       );
     };
 
@@ -140,7 +143,7 @@ export const useHostSession = () => {
 
     captureBusyRef.current = true;
     try {
-      const scale = Math.min(1, 1280 / video.videoWidth);
+      const scale = Math.min(1, 960 / video.videoWidth);
       const width = Math.max(1, Math.round(video.videoWidth * scale));
       const height = Math.max(1, Math.round(video.videoHeight * scale));
       const canvas = canvasRef.current ?? document.createElement('canvas');
@@ -150,7 +153,7 @@ export const useHostSession = () => {
       const context = canvas.getContext('2d', { alpha: false });
       if (!context) return;
       context.drawImage(video, 0, 0, width, height);
-      const data = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+      const data = canvas.toDataURL('image/jpeg', 0.55).split(',')[1];
       if (!data) return;
       const message = {
         type: 'frame',
@@ -167,7 +170,7 @@ export const useHostSession = () => {
         if (
           !mediaReadyPeersRef.current.has(connection.peer) &&
           connection.open &&
-          connection.dataChannel.bufferedAmount < 512 * 1024
+          connection.dataChannel.bufferedAmount < 256 * 1024
         ) {
           connection.send(message);
         }
@@ -221,7 +224,7 @@ export const useHostSession = () => {
         }
         const stream = await navigator.mediaDevices.getDisplayMedia({
           video: {
-            frameRate: { ideal: 90, max: 120 },
+            frameRate: { ideal: TARGET_CAPTURE_FPS, max: TARGET_CAPTURE_FPS },
             width: { ideal: 3840, max: 3840 },
             height: { ideal: 2160, max: 2160 },
           },
@@ -230,9 +233,9 @@ export const useHostSession = () => {
         streamRef.current = stream;
         const videoTrack = stream.getVideoTracks()[0];
         if (!videoTrack) throw new Error('The selected source did not provide a video track.');
-        videoTrack.contentHint = 'detail';
+        videoTrack.contentHint = 'motion';
         await videoTrack
-          .applyConstraints({ frameRate: { ideal: 90, max: 120 } })
+          .applyConstraints({ frameRate: { ideal: TARGET_CAPTURE_FPS, max: TARGET_CAPTURE_FPS } })
           .catch(() => undefined);
 
         const video = document.createElement('video');
@@ -287,6 +290,9 @@ export const useHostSession = () => {
 
             const mediaPeer = new RTCPeerConnection({
               iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+              bundlePolicy: 'max-bundle',
+              rtcpMuxPolicy: 'require',
+              iceCandidatePoolSize: 4,
             });
             mediaPeersRef.current.set(connectionKey, mediaPeer);
             pendingIceRef.current.set(connectionKey, []);

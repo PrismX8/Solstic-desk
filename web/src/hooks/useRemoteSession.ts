@@ -210,9 +210,13 @@ export const useRemoteSession = (): RemoteSessionApi => {
   }, []);
 
   const sendMessage = useCallback((type: string, payload: Record<string, unknown>) => {
-    const preferred = type === 'input_event'
-      ? controlConnectionRef.current
-      : connectionRef.current;
+    const isRealtimePointer =
+      type === 'input_event' && payload.kind === 'mouse_move' && payload.reliable !== true;
+    const preferred = isRealtimePointer
+      ? pointerConnectionRef.current
+      : type === 'input_event'
+        ? controlConnectionRef.current
+        : connectionRef.current;
     const connection = preferred?.open ? preferred : connectionRef.current;
     if (!connection?.open) return false;
     connection.send({ type, payload });
@@ -474,6 +478,9 @@ export const useRemoteSession = (): RemoteSessionApi => {
     mediaPeerRef.current?.close();
     const mediaPeer = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require',
+      iceCandidatePoolSize: 4,
     });
     mediaPeerRef.current = mediaPeer;
     mediaPeer.onicecandidate = (event) => {
@@ -482,7 +489,13 @@ export const useRemoteSession = (): RemoteSessionApi => {
       }
     };
     mediaPeer.ontrack = async (event) => {
-      (event.receiver as RTCRtpReceiver & { playoutDelayHint?: number }).playoutDelayHint = 0.08;
+      const lowLatencyReceiver = event.receiver as RTCRtpReceiver & {
+        playoutDelayHint?: number;
+        jitterBufferTarget?: number;
+      };
+      lowLatencyReceiver.playoutDelayHint = 0;
+      lowLatencyReceiver.jitterBufferTarget = 0;
+      event.track.contentHint = 'motion';
       const stream = event.streams[0] ?? new MediaStream([event.track]);
       remoteStreamRef.current = stream;
       mediaActiveRef.current = true;

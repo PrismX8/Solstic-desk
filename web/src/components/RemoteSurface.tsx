@@ -31,6 +31,7 @@ type DisplayRect = {
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
 const MIN_PANEL = { width: 420, height: 320 };
+const POINTER_SEND_INTERVAL_MS = 1000 / 240;
 
 const resolveDisplayRect = (
   surface: HTMLDivElement,
@@ -232,7 +233,10 @@ export const RemoteSurface = ({ session }: Props) => {
 
       pendingPointerRef.current = coords;
       if (pointerTimerRef.current !== null) return;
-      const delay = Math.max(0, 16 - (performance.now() - lastPointerSentAtRef.current));
+      const delay = Math.max(
+        0,
+        POINTER_SEND_INTERVAL_MS - (performance.now() - lastPointerSentAtRef.current),
+      );
       pointerTimerRef.current = window.setTimeout(() => {
         pointerTimerRef.current = null;
         const latest = pendingPointerRef.current;
