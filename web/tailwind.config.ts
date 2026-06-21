@@ -19,15 +19,15 @@ const config: Config = {
           950: '#070a24',
         },
         aurora: {
-          DEFAULT: '#5EF0FF',
-          dark: '#2BBAC8',
+          DEFAULT: '#6BA8FF',
+          dark: '#3979D6',
         },
       },
       fontFamily: {
         sans: ['Inter', 'Inter var', 'system-ui', 'sans-serif'],
       },
       boxShadow: {
-        glow: '0 20px 70px rgba(94, 240, 255, 0.18)',
+        glow: '0 20px 70px rgba(107, 168, 255, 0.18)',
       },
       backdropBlur: {
         xs: '2px',

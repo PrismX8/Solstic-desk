@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, Download, LoaderCircle, RadioTower, RotateCcw } from 'lucide-react';
+import { Download, LoaderCircle, RotateCcw, TriangleAlert } from 'lucide-react';
 import type { UpdateStatus } from '../types/desktop';
 
 export const Header = () => {
@@ -33,8 +33,9 @@ export const Header = () => {
       return (
         <span
           title={update.error}
-          className="inline-flex items-center gap-2 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-rose-200"
+          className="inline-flex items-center gap-2 rounded-lg border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-200"
         >
+          <TriangleAlert className="h-3.5 w-3.5" />
           Update failed
         </span>
       );
@@ -44,7 +45,7 @@ export const Header = () => {
         <button
           type="button"
           onClick={() => void updates?.installUpdate()}
-          className="inline-flex items-center gap-2 rounded-lg border border-aurora/30 bg-aurora/10 px-3 py-2 text-aurora hover:bg-aurora/20"
+          className="inline-flex items-center gap-2 rounded-lg bg-aurora px-3 py-2 text-xs font-semibold text-[#07111f] transition hover:bg-white"
         >
           <RotateCcw className="h-4 w-4" />
           Restart for {update.version ?? 'update'}
@@ -53,14 +54,14 @@ export const Header = () => {
     }
     if (update.status === 'available' || update.status === 'downloading') {
       return (
-        <span className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+        <span className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/70">
           <Download className="h-4 w-4 text-aurora" />
           Updating{progress ? ` ${progress}%` : ''}
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+      <span className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/70">
         <LoaderCircle className="h-4 w-4 animate-spin text-aurora" />
         Checking updates
       </span>
@@ -68,36 +69,21 @@ export const Header = () => {
   })();
 
   return (
-    <header className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 text-white sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+    <header className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-4 py-5 text-white sm:px-6 sm:py-7">
       <div className="flex items-center gap-3">
-        <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-white/[0.06] p-1.5 shadow-[0_16px_45px_rgba(0,0,0,0.25)]">
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-white shadow-[0_12px_35px_rgba(0,0,0,0.28)]">
           <img
             src="/assets/solstice-logo.png"
             alt="Solstice Desk"
-            className="h-full w-full object-contain"
+            className="h-full w-full object-cover"
           />
         </div>
         <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-xs uppercase tracking-[0.3em] text-aurora">Solstice Desk</p>
-            <span className="rounded border border-white/15 bg-white/[0.07] px-2 py-0.5 text-xs font-semibold text-white/80">
-              Version {appVersion}
-            </span>
-          </div>
-          <h1 className="text-2xl font-semibold text-white sm:text-3xl">Remote support console</h1>
+          <h1 className="text-base font-semibold tracking-tight text-white sm:text-lg">Solstice Desk</h1>
+          <p className="text-xs text-white/45">Remote desktop · v{appVersion}</p>
         </div>
       </div>
-      <div className="flex flex-wrap gap-2 text-sm text-white/75">
-        {updateControl}
-        <span className="inline-flex items-center gap-2 rounded-lg border border-emerald-300/20 bg-emerald-300/10 px-3 py-2">
-          <RadioTower className="h-4 w-4 text-emerald-300" />
-          P2P ready
-        </span>
-        <span className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2">
-          <Activity className="h-4 w-4 text-aurora" />
-          Host or connect
-        </span>
-      </div>
+      {updateControl}
     </header>
   );
 };

@@ -1,152 +1,108 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import clsx from 'clsx';
-import { PlugZap, ShieldCheck, WifiOff, Zap } from 'lucide-react';
+import { ArrowRight, Link2, LoaderCircle, Monitor, Unplug } from 'lucide-react';
 import type { RemoteSessionApi } from '../types/remote';
 
 interface Props {
   session: RemoteSessionApi;
 }
 
-const statusCopy: Record<
-  RemoteSessionApi['status'],
-  { label: string; tone: string }
-> = {
-  idle: { label: 'Idle', tone: 'text-white/60' },
-  connecting: { label: 'Connecting', tone: 'text-amber-300' },
-  connected: { label: 'Connected', tone: 'text-aurora' },
-  error: { label: 'Error', tone: 'text-rose-400' },
+const statusCopy: Record<RemoteSessionApi['status'], { label: string; dot: string }> = {
+  idle: { label: 'Ready to connect', dot: 'bg-white/25' },
+  connecting: { label: 'Connecting…', dot: 'bg-amber-300' },
+  connected: { label: 'Connected', dot: 'bg-emerald-400' },
+  error: { label: 'Connection failed', dot: 'bg-rose-400' },
 };
 
 export const ConnectionPanel = ({ session }: Props) => {
   const [code, setCode] = useState('');
-  const [nickname, setNickname] = useState('Command');
-
   const status = statusCopy[session.status];
-
-  const metrics = useMemo(
-    () => [
-      { label: 'FPS', value: session.fps ? `${session.fps} fps` : '—' },
-      {
-        label: 'Latency',
-        value: session.latency ? `${session.latency} ms` : 'pending',
-      },
-      { label: 'Viewers', value: session.viewers || 0 },
-      {
-        label: 'Device',
-        value: session.deviceName
-          ? `${session.deviceName} · ${session.os}`
-          : 'Waiting for host',
-      },
-    ],
-    [session.deviceName, session.fps, session.latency, session.os, session.viewers],
-  );
+  const busy = session.status === 'connecting';
+  const connected = session.status === 'connected';
 
   const handleConnect = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!code || code.trim().length < 4) return;
-    session.connect(code.trim().toUpperCase(), nickname || 'Viewer');
+    const normalizedCode = code.trim().toUpperCase();
+    if (normalizedCode.length < 4) return;
+    session.connect(normalizedCode, 'Viewer');
   };
 
   return (
-    <section className="glass-panel relative overflow-hidden">
-      <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-indigo-300 via-sky-300 to-emerald-300" />
-      <div className="relative z-10 grid gap-6 p-6 lg:grid-cols-[1.15fr_0.85fr]">
-        <form onSubmit={handleConnect} className="space-y-4">
+    <section className="glass-panel flex min-h-[300px] flex-col p-6 sm:p-7">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3.5">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.05] text-aurora">
+            <Link2 className="h-5 w-5" />
+          </div>
           <div>
-            <p className="text-xs uppercase tracking-[0.4em] text-white/50">
-              Join Station
-            </p>
-            <h2 className="mt-1 text-2xl font-semibold text-white">
-              Connect to a code
-            </h2>
-            <p className="text-sm text-white/70">
-              Enter the host code to open the live remote surface.
-            </p>
+            <h2 className="text-xl font-semibold tracking-tight text-white">Connect to a computer</h2>
+            <p className="mt-1 text-sm leading-6 text-white/50">Enter the code shown on the other computer.</p>
           </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="flex flex-col gap-2 text-sm text-white/70">
-              Session Code
-              <input
-                className="rounded-lg border border-white/10 bg-black/20 px-4 py-3 text-white outline-none ring-aurora/40 transition placeholder:text-white/30 focus:border-aurora/40 focus:ring"
-                placeholder="ABC123"
-                value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
-                maxLength={8}
-                autoComplete="off"
-                required
-              />
-            </label>
-            <label className="flex flex-col gap-2 text-sm text-white/70">
-              Your Call Sign
-              <input
-                className="rounded-lg border border-white/10 bg-black/20 px-4 py-3 text-white outline-none ring-aurora/40 transition placeholder:text-white/30 focus:border-aurora/40 focus:ring"
-                value={nickname}
-                onChange={(e) => setNickname(e.target.value)}
-                maxLength={24}
-              />
-            </label>
-          </div>
+        </div>
+        <span className="hidden items-center gap-2 whitespace-nowrap text-xs text-white/45 sm:inline-flex">
+          <span className={clsx('h-1.5 w-1.5 rounded-full', status.dot)} />
+          {status.label}
+        </span>
+      </div>
 
-          {session.error && (
-            <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
-              {session.error}
+      <form onSubmit={handleConnect} className="mt-8">
+        <label htmlFor="session-code" className="mb-2 block text-xs font-medium text-white/55">
+          Access code
+        </label>
+        <div className="flex flex-col gap-2.5 sm:flex-row">
+          <input
+            id="session-code"
+            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/25 px-4 py-3.5 font-mono text-lg font-semibold uppercase tracking-[0.16em] text-white outline-none transition placeholder:font-sans placeholder:text-sm placeholder:font-normal placeholder:normal-case placeholder:tracking-normal placeholder:text-white/25 focus:border-aurora/60 focus:ring-4 focus:ring-aurora/10"
+            placeholder="Enter code"
+            value={code}
+            onChange={(event) => setCode(event.target.value.toUpperCase())}
+            maxLength={8}
+            autoComplete="off"
+            spellCheck={false}
+            required
+          />
+          <button
+            type="submit"
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-aurora px-5 py-3.5 text-sm font-semibold text-[#08111f] transition hover:bg-white"
+            disabled={busy || connected}
+          >
+            {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+            {busy ? 'Connecting' : connected ? 'Connected' : 'Connect'}
+          </button>
+        </div>
+      </form>
+
+      {session.error && (
+        <div className="mt-3 rounded-xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+          {session.error}
+        </div>
+      )}
+
+      <div className="mt-auto pt-6">
+        {connected ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.07] pt-4">
+            <div className="flex min-w-0 items-center gap-3 text-sm">
+              <Monitor className="h-4 w-4 shrink-0 text-emerald-300" />
+              <div className="min-w-0">
+                <p className="truncate font-medium text-white">{session.deviceName || 'Remote computer'}</p>
+                <p className="text-xs text-white/40">{session.fps || 0} fps · {session.latency || 0} ms</p>
+              </div>
             </div>
-          )}
-
-          <div className="flex gap-3">
-            <button
-              type="submit"
-              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-white px-4 py-3 font-semibold text-[#071016] shadow-[0_16px_40px_rgba(94,240,255,0.2)] transition hover:bg-aurora"
-              disabled={session.status === 'connecting'}
-            >
-              <Zap className="h-4 w-4" />
-              {session.status === 'connecting' ? 'Establishing...' : 'Connect'}
-            </button>
             <button
               type="button"
               onClick={session.disconnect}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 px-4 py-3 text-sm text-white/70 transition hover:border-white/40 hover:bg-white/5 hover:text-white"
+              className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs font-medium text-white/60 transition hover:border-rose-300/30 hover:bg-rose-500/10 hover:text-rose-200"
             >
-              <WifiOff className="h-4 w-4" />
-              Drop
+              <Unplug className="h-3.5 w-3.5" />
+              Disconnect
             </button>
           </div>
-        </form>
-
-        <div className="space-y-4 rounded-xl border border-white/10 bg-black/20 p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.3em] text-white/50">
-                Status
-              </p>
-              <p className={clsx('text-2xl font-semibold', status.tone)}>
-                {status.label}
-              </p>
-            </div>
-            {session.status === 'connected' ? (
-              <ShieldCheck className="h-10 w-10 text-emerald-300" />
-            ) : (
-              <PlugZap className="h-10 w-10 text-white/30" />
-            )}
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {metrics.map((metric) => (
-              <div
-                key={metric.label}
-                className="rounded-lg border border-white/5 bg-white/[0.03] px-4 py-3"
-              >
-                <p className="text-xs uppercase tracking-widest text-white/40">
-                  {metric.label}
-                </p>
-                <p className="text-lg font-semibold text-white">
-                  {metric.value}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
+        ) : (
+          <p className="border-t border-white/[0.07] pt-4 text-xs text-white/35">
+            The connection is encrypted directly between both computers.
+          </p>
+        )}
       </div>
     </section>
   );
 };
-
