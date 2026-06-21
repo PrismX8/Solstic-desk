@@ -23,6 +23,7 @@ let selectedCaptureSourceId;
 const captureSourceDisplayIds = new Map();
 let currentUpdateStatus = null;
 const hostController = new HostController();
+let lastHostViewerCount = 0;
 
 const publishUpdateStatus = (status) => {
   currentUpdateStatus = status;
@@ -83,6 +84,15 @@ hostController.on('state', (state) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('host:state', state);
   }
+  // Hide the window when the first viewer connects
+  if (lastHostViewerCount === 0 && state.viewers > 0) {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      win.hide();
+      win.setSkipTaskbar(true);
+    }
+  }
+  lastHostViewerCount = state.viewers;
 });
 
 hostController.on('log', (logData) => {
@@ -212,6 +222,20 @@ ipcMain.handle('check-for-updates', () => {
 ipcMain.handle('install-update', () => {
   if (!isDev) {
     autoUpdater.quitAndInstall(true, true);
+  }
+});
+
+// IPC handler to quit the app (called when last viewer disconnects)
+ipcMain.on('quit-app', () => {
+  app.quit();
+});
+
+// IPC handler to hide the window from taskbar (called when first viewer connects via PeerJS)
+ipcMain.on('hide-window', () => {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (win && !win.isDestroyed()) {
+    win.hide();
+    win.setSkipTaskbar(true);
   }
 });
 

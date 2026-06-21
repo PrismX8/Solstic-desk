@@ -56,6 +56,7 @@ export const useHostSession = () => {
   const connectedAtRef = useRef(new Map<string, number>());
   const adaptiveSendersRef = useRef(new Map<string, AdaptiveSender>());
   const latestPointerSequenceRef = useRef(new Map<string, number>());
+  const stoppingRef = useRef(false);
 
   const applyStreamProfile = useCallback(async (key: string, profileIndex: number) => {
     const adaptive = adaptiveSendersRef.current.get(key);
@@ -182,25 +183,30 @@ export const useHostSession = () => {
   }, []);
 
   const stop = useCallback(async () => {
-    connectionsRef.current.forEach((connection) => connection.close());
-    connectionsRef.current.clear();
-    mediaPeersRef.current.forEach((connection) => connection.close());
-    mediaPeersRef.current.clear();
-    pendingIceRef.current.clear();
-    mediaReadyPeersRef.current.clear();
-    connectedAtRef.current.clear();
-    adaptiveSendersRef.current.clear();
-    latestPointerSequenceRef.current.clear();
-    peerRef.current?.destroy();
-    peerRef.current = null;
-    if (frameTimerRef.current) window.clearTimeout(frameTimerRef.current);
-    frameTimerRef.current = undefined;
-    captureBusyRef.current = false;
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    videoRef.current = null;
-    canvasRef.current = null;
-    setState(initialState);
+    stoppingRef.current = true;
+    try {
+      connectionsRef.current.forEach((connection) => connection.close());
+      connectionsRef.current.clear();
+      mediaPeersRef.current.forEach((connection) => connection.close());
+      mediaPeersRef.current.clear();
+      pendingIceRef.current.clear();
+      mediaReadyPeersRef.current.clear();
+      connectedAtRef.current.clear();
+      adaptiveSendersRef.current.clear();
+      latestPointerSequenceRef.current.clear();
+      peerRef.current?.destroy();
+      peerRef.current = null;
+      if (frameTimerRef.current) window.clearTimeout(frameTimerRef.current);
+      frameTimerRef.current = undefined;
+      captureBusyRef.current = false;
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      videoRef.current = null;
+      canvasRef.current = null;
+      setState(initialState);
+    } finally {
+      stoppingRef.current = false;
+    }
   }, []);
 
   const start = useCallback(
@@ -276,6 +282,10 @@ export const useHostSession = () => {
               ...previous,
               viewers: connectionsRef.current.size,
             }));
+            // Hide the Electron window from the taskbar when the first viewer connects
+            if (connectionsRef.current.size === 1) {
+              window.solsticeDesktop?.hideWindow?.();
+            }
 
             connection.send({
               type: 'session_accept',
@@ -393,6 +403,10 @@ export const useHostSession = () => {
               ...previous,
               viewers: connectionsRef.current.size,
             }));
+            // Quit the app when the last viewer disconnects (unless the host is stopping manually)
+            if (!stoppingRef.current && connectionsRef.current.size === 0) {
+              window.solsticeDesktop?.quitApp?.();
+            }
           };
           connection.on('close', removeViewer);
           connection.on('error', removeViewer);

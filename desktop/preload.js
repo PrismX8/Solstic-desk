@@ -45,5 +45,7 @@ contextBridge.exposeInMainWorld('solsticeDesktop', {
   },
   host: hostApi,
   updates: updateApi,
+  quitApp: () => ipcRenderer.send('quit-app'),
+  hideWindow: () => ipcRenderer.send('hide-window'),
 });
 

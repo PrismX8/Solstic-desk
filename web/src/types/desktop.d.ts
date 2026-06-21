@@ -52,6 +52,8 @@ declare global {
       versions: Record<string, string>;
       host?: HostApi;
       updates?: UpdateApi;
+      quitApp: () => void;
+      hideWindow: () => void;
     };
   }
 }
