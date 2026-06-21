@@ -39,6 +39,7 @@ const createWindow = () => {
     minHeight: 640,
     backgroundColor: '#050714',
     title: 'Solstice Desk',
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

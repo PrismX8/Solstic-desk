@@ -9,6 +9,7 @@
     "preload.js",
     "relay.js",
     "package.json",
+    "assets/**/*",
     "host/**/*",
     "native/**/*",
     "build/Release/**/*",
@@ -19,6 +20,7 @@
     "build/Release/**/*"
   ],
   "win": {
+    "icon": "assets/icon.ico",
     "target": [
       {
         "target": "nsis",
@@ -29,6 +31,8 @@
   "nsis": {
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
+    "installerIcon": "assets/icon.ico",
+    "uninstallerIcon": "assets/icon.ico",
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true
   },

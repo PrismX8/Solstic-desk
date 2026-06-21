@@ -1,6 +1,6 @@
 {
   "name": "solstice-desktop",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "private": true,
   "description": "Electron shell for Solstice Desk viewer.",
   "author": "Solstice Desk",
@@ -33,4 +33,3 @@
     "prettier": "^3.3.3"
   }
 }
-

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, Download, LoaderCircle, RadioTower, RotateCcw, Sparkles } from 'lucide-react';
+import { Activity, Download, LoaderCircle, RadioTower, RotateCcw } from 'lucide-react';
 import type { UpdateStatus } from '../types/desktop';
 
 export const Header = () => {
@@ -70,8 +70,12 @@ export const Header = () => {
   return (
     <header className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 text-white sm:px-6 lg:flex-row lg:items-center lg:justify-between">
       <div className="flex items-center gap-3">
-        <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-white text-[#071016] shadow-[0_16px_45px_rgba(0,0,0,0.25)]">
-          <Sparkles className="h-6 w-6" />
+        <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-white/[0.06] p-1.5 shadow-[0_16px_45px_rgba(0,0,0,0.25)]">
+          <img
+            src="/assets/solstice-logo.png"
+            alt="Solstice Desk"
+            className="h-full w-full object-contain"
+          />
         </div>
         <div>
           <div className="flex flex-wrap items-center gap-2">
