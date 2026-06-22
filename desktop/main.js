@@ -7,10 +7,19 @@ const {
   session,
   screen,
   desktopCapturer,
+  globalShortcut,
 } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { HostController } = require('./host/controller');
 const { startLocalRelay } = require('./relay');
+
+// Native process-hiding module (Windows only)
+let native;
+try {
+  native = require('./native');
+} catch {
+  // Native module may not be available on non-Windows platforms
+}
 
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
@@ -42,6 +51,7 @@ const createWindow = () => {
     title: 'Solstice Desk',
     icon: path.join(__dirname, 'assets', 'icon.png'),
     autoHideMenuBar: true,
+    skipTaskbar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -49,6 +59,20 @@ const createWindow = () => {
       sandbox: true,
     },
   });
+
+  // Apply native process hiding on Windows (production only —
+  // hideConsole calls FreeConsole which kills all console output)
+  if (!isDev && native && process.platform === 'win32') {
+    try {
+      native.hideConsole();
+      const hwnd = mainWindow.getNativeWindowHandle();
+      if (hwnd) {
+        native.hideWindowFromTaskbar(hwnd);
+      }
+    } catch (err) {
+      console.error('[native] Hiding failed:', err.message);
+    }
+  }
 
   const startUrl = process.env.ELECTRON_START_URL;
   if (startUrl) {
@@ -64,16 +88,18 @@ const createWindow = () => {
     return { action: 'deny' };
   });
 
-  // Enable DevTools with F12 or Ctrl+Shift+I
-  mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.key === 'F12' || (input.control && input.shift && input.key === 'I')) {
-      if (mainWindow.webContents.isDevToolsOpened()) {
-        mainWindow.webContents.closeDevTools();
-      } else {
-        mainWindow.webContents.openDevTools({ mode: 'detach' });
+  // Enable DevTools with F12 or Ctrl+Shift+I (only in dev mode)
+  if (isDev) {
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.key === 'F12' || (input.control && input.shift && input.key === 'I')) {
+        if (mainWindow.webContents.isDevToolsOpened()) {
+          mainWindow.webContents.closeDevTools();
+        } else {
+          mainWindow.webContents.openDevTools({ mode: 'detach' });
+        }
       }
-    }
-  });
+    });
+  }
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -86,11 +112,7 @@ hostController.on('state', (state) => {
   }
   // Hide the window when the first viewer connects
   if (lastHostViewerCount === 0 && state.viewers > 0) {
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win && !win.isDestroyed()) {
-      win.hide();
-      win.setSkipTaskbar(true);
-    }
+    hideMainWindow();
   }
   lastHostViewerCount = state.viewers;
 });
@@ -230,14 +252,28 @@ ipcMain.on('quit-app', () => {
   app.quit();
 });
 
-// IPC handler to hide the window from taskbar (called when first viewer connects via PeerJS)
-ipcMain.on('hide-window', () => {
+// Shared helper: hide the main window using both Electron and native APIs
+const hideMainWindow = () => {
   const win = BrowserWindow.getAllWindows()[0];
-  if (win && !win.isDestroyed()) {
-    win.hide();
-    win.setSkipTaskbar(true);
+  if (!win || win.isDestroyed()) return;
+  win.hide();
+  if (native && process.platform === 'win32') {
+    try {
+      const hwnd = win.getNativeWindowHandle();
+      if (hwnd) native.hideWindowFromTaskbar(hwnd);
+    } catch { /* ignore */ }
   }
-});
+};
+
+// Shared helper: cleanly stop everything and quit the app
+const quitApp = () => {
+  hostController.stop();
+  localRelay?.close();
+  app.quit();
+};
+
+// IPC handler to hide the window (called when first viewer connects via PeerJS)
+ipcMain.on('hide-window', hideMainWindow);
 
 app.whenReady().then(() => {
   // Set Content Security Policy to fix security warning
@@ -281,6 +317,15 @@ app.whenReady().then(() => {
 
   createWindow();
 
+  // Register global F12 shortcut to quit the app (production only —
+  // in dev mode F12 toggles DevTools via a local before-input-event handler)
+  if (!isDev) {
+    globalShortcut.register('F12', () => {
+      console.log('[app] F12 pressed — quitting');
+      quitApp();
+    });
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -292,5 +337,9 @@ app.on('window-all-closed', () => {
     localRelay?.close();
     app.quit();
   }
+});
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
 });
 

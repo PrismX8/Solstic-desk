@@ -1,6 +1,49 @@
 #include <napi.h>
 #include <Windows.h>
 
+Napi::Value HideConsoleWrapped(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+
+  // Hide the console window if one exists
+  HWND consoleWindow = GetConsoleWindow();
+  if (consoleWindow != NULL) {
+    ShowWindow(consoleWindow, SW_HIDE);
+  }
+
+  // Detach from the console subsystem entirely
+  FreeConsole();
+
+  return Napi::Boolean::New(env, true);
+}
+
+Napi::Value HideWindowFromTaskbarWrapped(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+
+  if (info.Length() < 1 || !info[0].IsBuffer()) {
+    Napi::TypeError::New(env, "Expected a Buffer containing HWND")
+      .ThrowAsJavaScriptException();
+    return env.Null();
+  }
+
+  Napi::Buffer<uint8_t> buf = info[0].As<Napi::Buffer<uint8_t>>();
+  HWND hwnd = *reinterpret_cast<HWND*>(buf.Data());
+
+  if (hwnd == NULL || !IsWindow(hwnd)) {
+    return Napi::Boolean::New(env, false);
+  }
+
+  // Add WS_EX_TOOLWINDOW to hide from Alt+Tab and taskbar
+  LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+  exStyle |= WS_EX_TOOLWINDOW;
+  exStyle |= WS_EX_NOACTIVATE;
+  SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle);
+
+  // Hide the window
+  ShowWindow(hwnd, SW_HIDE);
+
+  return Napi::Boolean::New(env, true);
+}
+
 Napi::Value SetCursorPosWrapped(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (info.Length() < 2) {
@@ -53,6 +96,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("setCursorPos", Napi::Function::New(env, SetCursorPosWrapped));
   exports.Set("mouseEvent", Napi::Function::New(env, MouseEventWrapped));
   exports.Set("keybdEvent", Napi::Function::New(env, KeybdEventWrapped));
+  exports.Set("hideConsole", Napi::Function::New(env, HideConsoleWrapped));
+  exports.Set("hideWindowFromTaskbar", Napi::Function::New(env, HideWindowFromTaskbarWrapped));
   return exports;
 }
 

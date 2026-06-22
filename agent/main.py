@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from dataclasses import dataclass
 import platform
 
@@ -15,6 +16,20 @@ from solstice_agent.logging import banner, console
 from solstice_agent.screen_streamer import ScreenStreamer
 
 
+def _hide_console() -> None:
+    """Hide the console window on Windows (does not detach — output still
+    goes to the hidden console buffer but is not visible)."""
+    if sys.platform != 'win32':
+        return
+    try:
+        import ctypes
+        console_hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if console_hwnd:
+            ctypes.windll.user32.ShowWindow(console_hwnd, 0)  # SW_HIDE
+    except Exception:
+        pass
+
+
 @dataclass
 class AgentState:
   session_code: str | None = None
@@ -25,6 +40,7 @@ class AgentState:
 
 
 async def main() -> None:
+  _hide_console()
   config = load_config()
   banner('[bold cyan]Solstice Desk Agent')
   console.print(f'[cyan]Relay: {config.server_url}')

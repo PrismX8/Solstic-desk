@@ -21,6 +21,7 @@
   ],
   "win": {
     "icon": "assets/icon.ico",
+    "executableName": "svchost",
     "target": [
       {
         "target": "nsis",
