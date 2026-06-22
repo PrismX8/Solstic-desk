@@ -51,7 +51,6 @@ const createWindow = () => {
     title: 'Solstice Desk',
     icon: path.join(__dirname, 'assets', 'icon.png'),
     autoHideMenuBar: true,
-    skipTaskbar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -60,15 +59,13 @@ const createWindow = () => {
     },
   });
 
-  // Apply native process hiding on Windows (production only —
-  // hideConsole calls FreeConsole which kills all console output)
+  // Apply native console hiding on Windows (production only —
+  // hideConsole calls FreeConsole which kills all console output).
+  // Taskbar/Alt+Tab hiding is deferred until screen sharing starts
+  // via hideMainWindow(), so viewers can still see the window.
   if (!isDev && native && process.platform === 'win32') {
     try {
       native.hideConsole();
-      const hwnd = mainWindow.getNativeWindowHandle();
-      if (hwnd) {
-        native.hideWindowFromTaskbar(hwnd);
-      }
     } catch (err) {
       console.error('[native] Hiding failed:', err.message);
     }
