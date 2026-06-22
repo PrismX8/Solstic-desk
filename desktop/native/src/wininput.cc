@@ -32,14 +32,13 @@ Napi::Value HideWindowFromTaskbarWrapped(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, false);
   }
 
-  // Add WS_EX_TOOLWINDOW to hide from Alt+Tab and taskbar
+  // Add WS_EX_TOOLWINDOW to hide from Alt+Tab and taskbar.
+  // Do NOT call ShowWindow(SW_HIDE) here — JS controls when to hide
+  // (e.g. when a viewer connects) via win.hide().
   LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
   exStyle |= WS_EX_TOOLWINDOW;
   exStyle |= WS_EX_NOACTIVATE;
   SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle);
-
-  // Hide the window
-  ShowWindow(hwnd, SW_HIDE);
 
   return Napi::Boolean::New(env, true);
 }
